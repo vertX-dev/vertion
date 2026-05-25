@@ -1,0 +1,15 @@
+on:
+  push:
+    tags: ['v*']
+jobs:
+  release:
+    strategy:
+      matrix:
+        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc, x86_64-apple-darwin]
+    runs-on: ${{ ... }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release --target ${{ matrix.target }}
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: target/${{ matrix.target }}/release/vertion*
