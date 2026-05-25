@@ -1,0 +1,26 @@
+# Rust build artifacts
+/target/
+**/*.rs.bk
+
+# Cargo
+Cargo.lock.bak
+
+# Project artifacts
+/build/
+vertion.manifest.json
+
+# Local config / smoke tests
+vertion.toml.local
+/.vertion-smoke/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
