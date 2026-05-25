@@ -1,0 +1,52 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "scopeName": "vertion.injection",
+  "injectionSelector": "L:source.js, L:source.js.jsx, L:source.jsx, L:source.ts, L:source.tsx, L:source.rust, L:source.c, L:source.cpp, L:source.java, L:source.cs, L:source.go, L:source.kotlin, L:source.swift, L:source.scala, L:source.php, L:source.python, L:source.shell, L:source.ruby, L:source.yaml, L:source.toml, L:source.perl, L:source.r",
+  "patterns": [
+    { "include": "#vertion-marker" }
+  ],
+  "repository": {
+    "vertion-marker": {
+      "name": "meta.vertion.marker",
+      "begin": "(?x) ^ \\s* (?://|\\#) \\s* (version) \\b",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.vertion" }
+      },
+      "end": "$",
+      "patterns": [
+        {
+          "name": "constant.language.vertion",
+          "match": "(?i)\\bALL\\b"
+        },
+        {
+          "name": "constant.numeric.version.vertion",
+          "match": "\\b[0-9]+(?:\\.[0-9]+){0,2}(?:-[A-Za-z0-9.-]+)?(?:\\+[A-Za-z0-9.-]+)?\\b"
+        },
+        {
+          "begin": "\\[",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.vertion" }
+          },
+          "end": "\\]",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.vertion" }
+          },
+          "patterns": [
+            {
+              "name": "punctuation.definition.vertion",
+              "match": ","
+            },
+            {
+              "name": "entity.name.tag.vertion",
+              "match": "[^,\\]]+"
+            }
+          ]
+        },
+        {
+          "name": "punctuation.definition.vertion",
+          "match": "\\*"
+        }
+      ]
+    }
+  }
+}

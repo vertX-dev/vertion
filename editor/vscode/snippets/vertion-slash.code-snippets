@@ -1,0 +1,27 @@
+{
+  "Vertion block": {
+    "prefix": "verb",
+    "body": ["//version ${1:1.0} *", "$0", "//version $1 *"],
+    "description": "Vertion versioned block (// comment)"
+  },
+  "Vertion ALL": {
+    "prefix": "vera",
+    "body": ["//version ALL", "$0", "//version ALL"],
+    "description": "Vertion ALL block (// comment)"
+  },
+  "Vertion tagged block": {
+    "prefix": "vert",
+    "body": ["//version ${1:1.0} [${2:tag}] *", "$0", "//version $1 [$2] *"],
+    "description": "Vertion tagged versioned block (// comment)"
+  },
+  "Vertion range block": {
+    "prefix": "verrb",
+    "body": ["//version ${1:1.3} ${2:2.0} *", "$0", "//version $1 $2 *"],
+    "description": "Vertion range block (// comment)"
+  },
+  "Vertion inline range": {
+    "prefix": "verr",
+    "body": ["//version ${1:1.3} ${2:2.0}", "$0"],
+    "description": "Vertion inline range — affects next line only (// comment)"
+  }
+}
