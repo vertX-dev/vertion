@@ -8,6 +8,10 @@ use crate::parser::{detect_marker, MarkerKind};
 #[derive(Debug, Clone)]
 pub struct Block {
     pub version: String,
+    /// Upper bound for range markers (block or inline). `None` for single-version markers.
+    pub to: Option<String>,
+    /// True for inline range markers (`//version 1.3 2.0` with no `*`). Single-line entries.
+    pub inline: bool,
     pub tags: Vec<String>,
     pub start_line: usize,
     pub end_line: usize,
@@ -29,28 +33,46 @@ pub fn collect_blocks(lines: &[String], style: CommentStyle) -> Vec<Block> {
 
     for (idx, line) in lines.iter().enumerate() {
         let line_no = idx + 1;
-        let m = match detect_marker(line, style) {
-            MarkerKind::Versioned(m) | MarkerKind::All(m) => m,
+        match detect_marker(line, style) {
+            MarkerKind::Versioned(m) | MarkerKind::All(m) => {
+                let top_match = stack
+                    .last()
+                    .map(|b| b.version == m.version && b.to == m.to)
+                    .unwrap_or(false);
+                if top_match {
+                    let mut closed = stack.pop().unwrap();
+                    closed.end_line = line_no;
+                    attach(&mut stack, &mut roots, closed);
+                } else {
+                    let depth = stack.len();
+                    stack.push(Block {
+                        version: m.version,
+                        to: m.to,
+                        inline: false,
+                        tags: m.tags,
+                        start_line: line_no,
+                        end_line: line_no,
+                        depth,
+                        children: Vec::new(),
+                    });
+                }
+            }
+            MarkerKind::InlineRange(m) => {
+                // Inline range: a leaf node attached to whatever's open above it.
+                let depth = stack.len();
+                let blk = Block {
+                    version: m.version,
+                    to: m.to,
+                    inline: true,
+                    tags: m.tags,
+                    start_line: line_no,
+                    end_line: line_no,
+                    depth,
+                    children: Vec::new(),
+                };
+                attach(&mut stack, &mut roots, blk);
+            }
             _ => continue,
-        };
-        let top_match = stack
-            .last()
-            .map(|b| b.version == m.version)
-            .unwrap_or(false);
-        if top_match {
-            let mut closed = stack.pop().unwrap();
-            closed.end_line = line_no;
-            attach(&mut stack, &mut roots, closed);
-        } else {
-            let depth = stack.len();
-            stack.push(Block {
-                version: m.version,
-                tags: m.tags,
-                start_line: line_no,
-                end_line: line_no,
-                depth,
-                children: Vec::new(),
-            });
         }
     }
     // Auto-close any leftovers at end-of-file.
@@ -101,8 +123,19 @@ fn render_block(blk: &Block, show_tags: bool, out: &mut String) {
     } else {
         String::new()
     };
+    if blk.inline {
+        // Inline range: single-line entry.
+        let to = blk.to.as_deref().unwrap_or("?");
+        out.push_str(&format!(
+            "{}[inline {} → {}]{} line {}\n",
+            indent, blk.version, to, tag_segment, blk.start_line
+        ));
+        return;
+    }
     let label = if blk.version.eq_ignore_ascii_case("ALL") {
         "[ALL]".to_string()
+    } else if let Some(to) = &blk.to {
+        format!("[version {} → {}]", blk.version, to)
     } else {
         format!("[version {}]", blk.version)
     };
@@ -144,6 +177,9 @@ fn render_graph_node(blk: &Block, prefix: &str, is_last: bool, out: &mut String)
 fn format_graph_label(blk: &Block) -> String {
     let base = if blk.version.eq_ignore_ascii_case("ALL") {
         "ALL".to_string()
+    } else if let Some(to) = &blk.to {
+        let prefix = if blk.inline { "inline " } else { "" };
+        format!("{}{} → {}", prefix, blk.version, to)
     } else {
         blk.version.clone()
     };
@@ -210,6 +246,31 @@ c";
         let out = render_show(&blocks, false, 5);
         assert!(out.contains("[base]"));
         assert!(out.contains("[version 1.1]"));
+    }
+
+    #[test]
+    fn show_renders_range_block_with_arrow() {
+        let src = "//version 1.3 2.0 *\nbody\n//version 1.3 2.0 *\n";
+        let blocks = collect_blocks(&lines(src), CommentStyle::DoubleSlash);
+        let out = render_show(&blocks, false, 3);
+        assert!(out.contains("[version 1.3 → 2.0]"));
+    }
+
+    #[test]
+    fn show_renders_inline_range_as_single_line() {
+        let src = "x\n//version 1.3 2.0\ntarget\ny\n";
+        let blocks = collect_blocks(&lines(src), CommentStyle::DoubleSlash);
+        let out = render_show(&blocks, false, 4);
+        assert!(out.contains("[inline 1.3 → 2.0]"));
+        assert!(out.contains("line 2"));
+    }
+
+    #[test]
+    fn graph_renders_range_with_arrow() {
+        let src = "//version 1.3 2.0 [beta] *\nx\n//version 1.3 2.0 [beta] *\n";
+        let blocks = collect_blocks(&lines(src), CommentStyle::DoubleSlash);
+        let out = render_graph(&blocks);
+        assert!(out.contains("1.3 → 2.0 [beta]"));
     }
 
     #[test]

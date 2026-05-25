@@ -8,6 +8,7 @@ mod settings;
 mod stats;
 mod validator;
 mod watcher;
+mod wrap;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -155,6 +156,16 @@ struct BuildArgs {
     /// Run shell command in the output folder after a successful build (repeatable, sequential)
     #[arg(long, short = 'r')]
     run: Vec<String>,
+    /// Wrap project files into an intermediate folder before building.
+    /// Forms: `--wrap`, `--wrap perm`, `--wrap temp NAME`, `--wrap perm NAME`.
+    /// Default mode is `temp`, default name is `.vertion_wrap`.
+    #[arg(long, num_args = 0..=2, value_names = ["MODE", "NAME"])]
+    wrap: Option<Vec<String>>,
+    /// Allow input paths outside the project root (otherwise a hard error).
+    /// Prints a warning when used. Does NOT bypass the output-inside-input check
+    /// (use `--wrap` for that).
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -336,8 +347,34 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         (args.tag.clone(), args.dev)
     };
 
+    // ---- Resolve wrap settings: CLI > profile > [last] (for `vertion last`) ----
+    let wrap_settings = resolve_wrap(&args, &resolved, &cfg, &kind)?;
+
+    // ---- Path safety checks before anything writes to disk ----
+    path_safety_checks(&input, &output, project_root, args.force, &wrap_settings)?;
+
+    // ---- Optional wrap: copy project files into intermediate folder ----
+    let mut build_input = input.clone();
+    if let Some((mode, name)) = &wrap_settings {
+        let wrap_dir = project_root.join(name);
+        let mut wrap_ignored = ignore.clone();
+        wrap_ignored.push(absolute(&output));
+        wrap_ignored.push(absolute(
+            &project_root.join(crate::settings::DEFAULT_CONFIG_NAME),
+        ));
+        let copied = wrap::wrap_project(&input, &wrap_dir, &wrap_ignored)
+            .map_err(|e| format!("wrap failed: {}", e))?;
+        println!(
+            "wrap ({}): copied {} file(s) → {}",
+            mode.as_str(),
+            copied,
+            wrap_dir.display()
+        );
+        build_input = wrap_dir;
+    }
+
     let opts = BuildOptions {
-        input: &input,
+        input: &build_input,
         output_root: &output,
         filter: &filter,
         ignore: &ignore,
@@ -348,7 +385,24 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         show_progress: !args.no_progress,
     };
 
-    let result = build_project(opts).map_err(|e| e.to_string())?;
+    let build_outcome = build_project(opts);
+
+    // Cleanup wrap (temp mode) regardless of build success.
+    if let Some((mode, name)) = &wrap_settings {
+        if *mode == wrap::WrapMode::Temp {
+            let wrap_dir = project_root.join(name);
+            if let Err(e) = wrap::cleanup_wrap(&wrap_dir) {
+                eprintln!(
+                    "{}: failed to clean up wrap dir `{}`: {}",
+                    paint_warning("warning"),
+                    wrap_dir.display(),
+                    e
+                );
+            }
+        }
+    }
+
+    let result = build_outcome.map_err(|e| e.to_string())?;
 
     println!(
         "{} ({})\n  files processed : {}\n  files modified  : {}\n  files copied    : {}\n  lines removed   : {}\n  time            : {}ms\n  output          : {}",
@@ -371,6 +425,10 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         runner::execute_run_commands(&run_commands, &result.output).map_err(|e| e.to_string())?;
     }
 
+    let (wrap_mode_str, wrap_name_str): (Option<&str>, Option<&str>) = match &wrap_settings {
+        Some((m, n)) => (Some(m.as_str()), Some(n.as_str())),
+        None => (None, None),
+    };
     save_last(
         project_root,
         &filter,
@@ -378,6 +436,8 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         args.auto,
         &tags,
         resolved.profile.as_deref(),
+        wrap_mode_str,
+        wrap_name_str,
     )
     .map_err(|e| e.to_string())?;
 
@@ -599,6 +659,105 @@ fn cmd_include(args: IncludeArgs) -> Result<(), String> {
         println!("Added include entry {} → {}", entry.from, entry.to);
     }
     Ok(())
+}
+
+// ---------- Wrap + path safety helpers ----------
+
+/// Resolve the wrap mode + name from CLI args, profile config, or [last] (for `vertion last`).
+/// Returns `None` if wrap is not in use for this build.
+fn resolve_wrap(
+    args: &BuildArgs,
+    resolved: &crate::settings::ResolvedSettings,
+    cfg: &VertionConfig,
+    kind: &BuildKind,
+) -> Result<Option<(wrap::WrapMode, String)>, String> {
+    // CLI takes priority. `--wrap` with no args means temp + default name.
+    if let Some(parts) = &args.wrap {
+        let mode = if parts.is_empty() {
+            wrap::WrapMode::Temp
+        } else {
+            wrap::WrapMode::parse(&parts[0])?
+        };
+        let name = parts
+            .get(1)
+            .cloned()
+            .unwrap_or_else(|| wrap::DEFAULT_WRAP_NAME.to_string());
+        return Ok(Some((mode, name)));
+    }
+    // For `vertion last`, restore from [last].
+    if matches!(kind, BuildKind::Last) && !cfg.last.wrap.is_empty() {
+        let mode = wrap::WrapMode::parse(&cfg.last.wrap)?;
+        let name = if cfg.last.wrap_name.is_empty() {
+            wrap::DEFAULT_WRAP_NAME.to_string()
+        } else {
+            cfg.last.wrap_name.clone()
+        };
+        return Ok(Some((mode, name)));
+    }
+    // Profile config fallback.
+    if let Some(mode_str) = &resolved.wrap {
+        let mode = wrap::WrapMode::parse(mode_str)?;
+        let name = resolved
+            .wrap_name
+            .clone()
+            .unwrap_or_else(|| wrap::DEFAULT_WRAP_NAME.to_string());
+        return Ok(Some((mode, name)));
+    }
+    Ok(None)
+}
+
+/// Pre-build path safety checks.
+///
+/// * Input outside project root → hard error unless `--force` is set (then a warning).
+/// * Output inside input → hard error unless `--wrap` is set.
+fn path_safety_checks(
+    input: &Path,
+    output: &Path,
+    project_root: &Path,
+    force: bool,
+    wrap_settings: &Option<(wrap::WrapMode, String)>,
+) -> Result<(), String> {
+    let input_abs = absolute(input);
+    let output_abs = absolute(output);
+    let root_abs = absolute(project_root);
+
+    // 1. Input escapes project root.
+    if !input_abs.starts_with(&root_abs) {
+        if force {
+            eprintln!(
+                "{}: input `{}` is outside the project root `{}` — proceeding due to --force",
+                paint_warning("warning"),
+                input_abs.display(),
+                root_abs.display()
+            );
+        } else {
+            return Err(format!(
+                "input path resolves to '{}' which is outside the project root '{}'.\n       This could result in processing gigabytes of unintended files.\n       Use --force to override.",
+                input_abs.display(),
+                root_abs.display()
+            ));
+        }
+    }
+
+    // 2. Output inside input. Allowed only when --wrap is active (because the wrap dir
+    //    will become the actual build input, sitting outside the output tree).
+    if output_abs.starts_with(&input_abs) && wrap_settings.is_none() {
+        return Err(
+            "output path is inside input path. Use --wrap to isolate project files before building."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn absolute(p: &Path) -> PathBuf {
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(p))
+            .unwrap_or_else(|_| p.to_path_buf())
+    }
 }
 
 // ---------- Color helpers ----------

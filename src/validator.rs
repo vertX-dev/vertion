@@ -68,7 +68,8 @@ fn validate_lines(
     style: crate::config::CommentStyle,
 ) -> Vec<ValidationIssue> {
     let mut issues = Vec::new();
-    let mut stack: Vec<(String, usize)> = Vec::new(); // (version_token, open_line)
+    // Stack of (version_token, optional_to, open_line). `to == None` for plain blocks.
+    let mut stack: Vec<(String, Option<String>, usize)> = Vec::new();
 
     for (idx, line) in lines.iter().enumerate() {
         let line_no = idx + 1;
@@ -82,34 +83,66 @@ fn validate_lines(
                 });
             }
             MarkerKind::Versioned(m) | MarkerKind::All(m) => {
-                if stack.last().map(|(v, _)| v == &m.version).unwrap_or(false) {
+                let top_matches = stack
+                    .last()
+                    .map(|(v, t, _)| v == &m.version && t == &m.to)
+                    .unwrap_or(false);
+                if top_matches {
                     stack.pop();
                 } else {
-                    // Check for duplicate sibling at same level (same version already open
-                    // anywhere in the stack means a future close will mis-pair).
-                    if stack.iter().any(|(v, _)| v == &m.version) {
+                    // If the top has the same version but a different `to`, it's a mismatched close.
+                    if let Some((v, t, open_line)) = stack.last() {
+                        if v == &m.version && t != &m.to {
+                            issues.push(ValidationIssue {
+                                file: path.to_path_buf(),
+                                line: line_no,
+                                severity: Severity::Error,
+                                message: format!(
+                                    "mismatched range close: opened at line {} with to=`{}`, closing with to=`{}`",
+                                    open_line,
+                                    t.as_deref().unwrap_or("<none>"),
+                                    m.to.as_deref().unwrap_or("<none>")
+                                ),
+                            });
+                            // Don't push or pop — treat the close as noise.
+                            continue;
+                        }
+                    }
+                    // Duplicate-sibling warning: same (version, to) already open higher.
+                    if stack.iter().any(|(v, t, _)| v == &m.version && t == &m.to) {
+                        let label = match &m.to {
+                            Some(to) => format!("{} {}", m.version, to),
+                            None => m.version.clone(),
+                        };
                         issues.push(ValidationIssue {
                             file: path.to_path_buf(),
                             line: line_no,
                             severity: Severity::Warning,
                             message: format!(
                                 "version `{}` is already open higher in the stack; the close marker will pair with the inner block, leaving the outer one unclosed",
-                                m.version
+                                label
                             ),
                         });
                     }
-                    stack.push((m.version, line_no));
+                    stack.push((m.version, m.to, line_no));
                 }
             }
+            // Inline range markers are single-line; nothing to pair, nothing to validate
+            // here beyond what `detect_marker` already caught (e.g. from >= to).
+            MarkerKind::InlineRange(_) => {}
             MarkerKind::None => {}
         }
     }
-    for (v, line_no) in &stack {
+    for (v, t, line_no) in &stack {
+        let label = match t {
+            Some(to) => format!("{} {}", v, to),
+            None => v.clone(),
+        };
         issues.push(ValidationIssue {
             file: path.to_path_buf(),
             line: *line_no,
             severity: Severity::Error,
-            message: format!("unclosed version block `{}`", v),
+            message: format!("unclosed version block `{}`", label),
         });
     }
     issues
@@ -186,6 +219,44 @@ mod tests {
     #[test]
     fn clean_file_has_no_issues() {
         let p = tmpfile("clean", "x\n//version 1.2 *\nin\n//version 1.2 *\ny\n");
+        let issues = validate_file(&p).unwrap();
+        assert!(issues.is_empty());
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn flags_range_marker_from_ge_to_as_malformed() {
+        let p = tmpfile("rangebad", "//version 2.0 1.3 *\nx\n//version 2.0 1.3 *\n");
+        let issues = validate_file(&p).unwrap();
+        assert!(issues.iter().any(|i| i.message.contains("malformed")));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn flags_unclosed_range_block() {
+        let p = tmpfile("rangeopen", "//version 1.3 2.0 *\ninside\n");
+        let issues = validate_file(&p).unwrap();
+        assert!(issues
+            .iter()
+            .any(|i| i.message.contains("unclosed") && i.message.contains("1.3 2.0")));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn flags_mismatched_range_close() {
+        let p = tmpfile("mismatch", "//version 1.3 2.0 *\nin\n//version 1.3 3.0 *\n");
+        let issues = validate_file(&p).unwrap();
+        assert!(issues
+            .iter()
+            .any(|i| i.message.contains("mismatched range close")));
+        let _ = fs::remove_file(&p);
+    }
+
+    #[test]
+    fn inline_range_does_not_open_a_block() {
+        // Inline range markers shouldn't pollute the stack — a single inline range
+        // followed by content must not be flagged as unclosed.
+        let p = tmpfile("inline", "//version 1.3 2.0\ninside\n");
         let issues = validate_file(&p).unwrap();
         assert!(issues.is_empty());
         let _ = fs::remove_file(&p);

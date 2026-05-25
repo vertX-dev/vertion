@@ -1,19 +1,24 @@
 use crate::config::CommentStyle;
-use crate::filter::{parse_version, passes, FilterMode};
+use crate::filter::{parse_version, passes, passes_range_marker, FilterMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
-    /// Raw token from the marker: a version string like "1.2" or the literal "ALL".
+    /// First token: a version string like "1.2" or the literal "ALL".
     pub version: String,
+    /// Upper bound for range markers (`//version 1.3 2.0`). `None` for single-version markers.
+    pub to: Option<String>,
     pub tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MarkerKind {
     /// A versioned open or close marker; open vs close is decided by the stack at processing time.
+    /// May carry a `to` value if it's a range marker block (`//version 1.3 2.0 *`).
     Versioned(Marker),
     /// Explicit `ALL` marker — a block whose contents are always included.
     All(Marker),
+    /// Inline range marker (`//version 1.3 2.0` with no `*`) — affects only the next line.
+    InlineRange(Marker),
     /// Malformed marker: looks like a marker but couldn't be parsed.
     Malformed(String),
     /// Not a marker.
@@ -25,8 +30,13 @@ const KEYWORD: &str = "version";
 /// Parse a single line and return its marker classification.
 ///
 /// Marker grammar (after the comment prefix and optional whitespace):
-///   `version` <ws> <token> [<ws> `[tag1,tag2,...]`] [<ws> `*`] <ws>*
-/// where `<token>` is either `ALL` (case-insensitive) or a semver-ish version.
+///   `version` <ws> <v1> [<ws> <v2>] [<ws> `[tag1,tag2,...]`] [<ws> `*`] <ws>*
+///
+/// Where:
+/// - `<v1>` is either `ALL` (case-insensitive) or a semver-ish version.
+/// - `<v2>` is an optional upper bound for range markers (only valid when `<v1>` is a version).
+///   - With `*`: range block (open/close paired by stack).
+///   - Without `*`: inline range (applies to the next line only).
 pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
     let trimmed = line.trim_start();
     let prefix = style.prefix();
@@ -51,7 +61,7 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
         return MarkerKind::Malformed("missing version or `ALL` after `version`".into());
     }
 
-    // Pull the version-or-ALL token (first whitespace-delimited word, stopping at `[`).
+    // First token: ALL or a version.
     let token_end = cursor
         .find(|c: char| c.is_whitespace() || c == '[')
         .unwrap_or(cursor.len());
@@ -61,6 +71,22 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
     let is_all = token.eq_ignore_ascii_case("ALL");
     if !is_all && parse_version(token).is_err() {
         return MarkerKind::Malformed(format!("unparseable version `{}`", token));
+    }
+
+    // Optional second version token (range marker upper bound). Only valid for non-ALL.
+    let mut to_token: Option<String> = None;
+    if !is_all && !cursor.is_empty() && !cursor.starts_with('[') && !cursor.starts_with('*') {
+        let next_end = cursor
+            .find(|c: char| c.is_whitespace() || c == '[')
+            .unwrap_or(cursor.len());
+        let next_token = &cursor[..next_end];
+        // Peek: only consume as `to` if it parses as a version. Otherwise leave it
+        // for the trailing-content check to flag as malformed (preserves existing
+        // behavior for things like `// version 2 of foo`).
+        if parse_version(next_token).is_ok() {
+            to_token = Some(next_token.to_string());
+            cursor = cursor[next_end..].trim_start();
+        }
     }
 
     // Optional [tags]
@@ -81,19 +107,37 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
     }
 
     // Optional `*` plus only whitespace afterwards.
-    if let Some(rest_after_star) = cursor.strip_prefix('*') {
-        cursor = rest_after_star.trim_start();
+    let has_star = cursor.starts_with('*');
+    if has_star {
+        cursor = cursor[1..].trim_start();
     }
     if !cursor.is_empty() {
         return MarkerKind::Malformed(format!("unexpected trailing content `{}`", cursor.trim()));
     }
 
+    // Validate range marker semantics (from < to).
+    if let Some(ref to_t) = to_token {
+        let from_v = parse_version(token).ok();
+        let to_v = parse_version(to_t).ok();
+        if let (Some(f), Some(t)) = (from_v, to_v) {
+            if f >= t {
+                return MarkerKind::Malformed(format!(
+                    "range marker has from >= to ({} >= {})",
+                    token, to_t
+                ));
+            }
+        }
+    }
+
     let marker = Marker {
         version: token.to_string(),
+        to: to_token,
         tags,
     };
     if is_all {
         MarkerKind::All(marker)
+    } else if marker.to.is_some() && !has_star {
+        MarkerKind::InlineRange(marker)
     } else {
         MarkerKind::Versioned(marker)
     }
@@ -126,16 +170,18 @@ pub fn process_file(
     let mut stripped = 0usize;
     let mut malformed: Vec<(usize, String)> = Vec::new();
     let extract = matches!(filter, FilterMode::Extract(_));
+    // Inline range pending: forces the next *content* line's inclusion to this value.
+    let mut inline_pending: Option<bool> = None;
 
     for (idx, line) in lines.iter().enumerate() {
         match detect_marker(line, style) {
             MarkerKind::Versioned(m) => {
                 had_markers = true;
                 stripped += 1;
-                // Top-of-stack version match closes the block.
+                // Top-of-stack version+to match closes the block.
                 if stack
                     .last()
-                    .map(|t| t.version == m.version)
+                    .map(|t| t.version == m.version && t.to == m.to)
                     .unwrap_or(false)
                 {
                     stack.pop();
@@ -156,13 +202,45 @@ pub fn process_file(
                     stack.push(m);
                 }
             }
+            MarkerKind::InlineRange(m) => {
+                had_markers = true;
+                stripped += 1;
+                // Combined: all ancestors pass AND this range marker passes.
+                let ancestors_pass = stack
+                    .iter()
+                    .all(|a| marker_passes_filter(a, filter, opts.tag_filter, extract));
+                let self_pass = passes_range_marker(
+                    &m.version,
+                    m.to.as_deref().unwrap_or(""),
+                    &m.tags,
+                    filter,
+                    opts.tag_filter,
+                );
+                // In Extract mode the inline range doesn't preserve base — only context preserves.
+                let final_pass = if extract {
+                    if !opts.extract_preserve_context {
+                        // Extract aims at exact-version blocks; ranges aren't tagged blocks,
+                        // so they're not emitted unless preserving context.
+                        false
+                    } else {
+                        ancestors_pass && self_pass
+                    }
+                } else {
+                    ancestors_pass && self_pass
+                };
+                inline_pending = Some(final_pass);
+            }
             MarkerKind::Malformed(reason) => {
                 had_markers = true;
                 stripped += 1;
                 malformed.push((idx + 1, reason));
             }
             MarkerKind::None => {
-                let include = decide_inclusion(&stack, filter, opts, extract);
+                let include = if let Some(forced) = inline_pending.take() {
+                    forced
+                } else {
+                    decide_inclusion(&stack, filter, opts, extract)
+                };
                 if include {
                     out.push(line.clone());
                 } else {
@@ -172,13 +250,44 @@ pub fn process_file(
         }
     }
 
-    let unclosed = stack.into_iter().map(|m| m.version).collect();
+    let unclosed = stack
+        .into_iter()
+        .map(|m| match m.to {
+            Some(t) => format!("{} {}", m.version, t),
+            None => m.version,
+        })
+        .collect();
     ProcessResult {
         lines: out,
         had_markers,
         unclosed,
         stripped,
         malformed,
+    }
+}
+
+/// Whether a marker on the ancestor stack passes the active filter.
+/// Handles plain versioned, ALL, and range-block markers uniformly.
+fn marker_passes_filter(
+    m: &Marker,
+    filter: &FilterMode,
+    tag_filter: &[String],
+    extract: bool,
+) -> bool {
+    if extract {
+        // In extract mode the ancestor rule is evaluated separately by decide_inclusion;
+        // this helper is only used for inline range eval, where extract is handled
+        // by the caller. Default to ancestor passing for non-extract code paths.
+        return passes_marker_general(m, filter, tag_filter);
+    }
+    passes_marker_general(m, filter, tag_filter)
+}
+
+fn passes_marker_general(m: &Marker, filter: &FilterMode, tag_filter: &[String]) -> bool {
+    if let Some(to) = &m.to {
+        passes_range_marker(&m.version, to, &m.tags, filter, tag_filter)
+    } else {
+        passes(&m.version, &m.tags, filter, tag_filter)
     }
 }
 
@@ -197,22 +306,25 @@ fn decide_inclusion(
         };
     }
     if extract {
-        // Extract mode: any ancestor matching the target version (+ tag filter) wins.
-        // ALL ancestors are passthrough only when preserve_context is set.
+        // Extract mode: any non-ALL, non-range ancestor matching the target version wins.
         let any_match = stack.iter().any(|m| {
             !m.version.eq_ignore_ascii_case("ALL")
+                && m.to.is_none()
                 && passes(&m.version, &m.tags, filter, opts.tag_filter)
         });
         if any_match {
             return true;
         }
-        let only_all = stack.iter().all(|m| m.version.eq_ignore_ascii_case("ALL"));
-        return only_all && opts.extract_preserve_context;
+        // ALL-only (or range-only) ancestor chain → only preserve_context emits.
+        let only_passthrough = stack
+            .iter()
+            .all(|m| m.version.eq_ignore_ascii_case("ALL") || m.to.is_some());
+        return only_passthrough && opts.extract_preserve_context;
     }
-    // Cumulative / Range / Only: every ancestor must independently pass.
+    // Cumulative / Range / Only / Include: every ancestor must independently pass.
     stack
         .iter()
-        .all(|m| passes(&m.version, &m.tags, filter, opts.tag_filter))
+        .all(|m| passes_marker_general(m, filter, opts.tag_filter))
 }
 
 #[cfg(test)]
@@ -243,6 +355,7 @@ mod tests {
             m,
             MarkerKind::Versioned(Marker {
                 version: "1.2".into(),
+                to: None,
                 tags: vec![]
             })
         );
@@ -255,6 +368,7 @@ mod tests {
             m,
             MarkerKind::Versioned(Marker {
                 version: "1.2".into(),
+                to: None,
                 tags: vec![]
             })
         );
@@ -270,6 +384,7 @@ mod tests {
             m,
             MarkerKind::Versioned(Marker {
                 version: "1.2".into(),
+                to: None,
                 tags: vec!["inventory".into(), "combat".into()]
             })
         );
@@ -282,10 +397,56 @@ mod tests {
     }
 
     #[test]
+    fn detect_inline_range() {
+        let m = detect_marker("//version 1.3 2.0", CommentStyle::DoubleSlash);
+        assert_eq!(
+            m,
+            MarkerKind::InlineRange(Marker {
+                version: "1.3".into(),
+                to: Some("2.0".into()),
+                tags: vec![],
+            })
+        );
+    }
+
+    #[test]
+    fn detect_range_block_with_star() {
+        let m = detect_marker("//version 1.3 2.0 *", CommentStyle::DoubleSlash);
+        assert_eq!(
+            m,
+            MarkerKind::Versioned(Marker {
+                version: "1.3".into(),
+                to: Some("2.0".into()),
+                tags: vec![],
+            })
+        );
+    }
+
+    #[test]
+    fn detect_range_with_tags() {
+        let m = detect_marker(
+            "//version 1.3 2.0 [inventory,beta] *",
+            CommentStyle::DoubleSlash,
+        );
+        assert_eq!(
+            m,
+            MarkerKind::Versioned(Marker {
+                version: "1.3".into(),
+                to: Some("2.0".into()),
+                tags: vec!["inventory".into(), "beta".into()],
+            })
+        );
+    }
+
+    #[test]
+    fn detect_range_from_ge_to_is_malformed() {
+        let m = detect_marker("//version 2.0 1.3 *", CommentStyle::DoubleSlash);
+        assert!(matches!(m, MarkerKind::Malformed(_)));
+    }
+
+    #[test]
     fn regular_comment_with_version_word_is_not_a_marker() {
         let m = detect_marker("// version 2 of foo", CommentStyle::DoubleSlash);
-        // After "version" comes " 2 of foo" — "2" is a valid version, but trailing
-        // "of foo" remains, so the line is rejected as malformed (not silently a marker).
         assert!(matches!(m, MarkerKind::Malformed(_)));
     }
 
@@ -323,6 +484,58 @@ e";
     }
 
     #[test]
+    fn inline_range_includes_next_line_only() {
+        let src = "\
+a
+//version 1.3 2.0
+inline_target
+b";
+        // Build 1.5 → 1.3 <= 1.5 < 2.0 passes → include `inline_target`.
+        assert_eq!(run(src, &["1.5"]), vec!["a", "inline_target", "b"]);
+        // Build 2.0 → boundary fails → skip `inline_target`.
+        assert_eq!(run(src, &["2.0"]), vec!["a", "b"]);
+        // Build 0.9 → below lower → skip.
+        assert_eq!(run(src, &["0.9"]), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn inline_range_skipped_in_only_mode() {
+        let src = "a\n//version 1.3 2.0\ninline_target\nb";
+        // ONLY mode skips range markers; inline_target gets dropped.
+        assert_eq!(run(src, &["1.5", "ONLY"]), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn range_block_open_close_paired_by_to() {
+        let src = "\
+a
+//version 1.3 2.0 *
+in
+//version 1.3 2.0 *
+b";
+        // Build 1.5 → range covers → include `in`.
+        assert_eq!(run(src, &["1.5"]), vec!["a", "in", "b"]);
+        // Build 2.0 → upper exclusive → drop `in`.
+        assert_eq!(run(src, &["2.0"]), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn range_block_nested_inside_regular_block() {
+        let src = "\
+//version 1.0 *
+outer
+//version 1.3 2.0 *
+inner
+//version 1.3 2.0 *
+//version 1.0 *
+tail";
+        // Build 1.5 → outer passes (1.0<=1.5), range passes → both kept.
+        assert_eq!(run(src, &["1.5"]), vec!["outer", "inner", "tail"]);
+        // Build 2.5 → outer passes, range fails (2.5>=2.0) → only outer kept.
+        assert_eq!(run(src, &["2.5"]), vec!["outer", "tail"]);
+    }
+
+    #[test]
     fn tag_filter_excludes_block_with_no_matching_tag() {
         let src = "\
 base
@@ -342,7 +555,6 @@ tail";
             extract_preserve_context: false,
         };
         let r = process_file(&lines(src), CommentStyle::DoubleSlash, &filter, opts);
-        // Untagged blocks pass tag filter; only the [combat] block is excluded.
         assert_eq!(r.lines, vec!["base", "untagged", "inv_code", "tail"]);
     }
 
@@ -413,6 +625,19 @@ base_bottom";
             ProcessOptions::default(),
         );
         assert_eq!(r.unclosed, vec![String::from("1.2")]);
+    }
+
+    #[test]
+    fn unclosed_range_block_detected() {
+        let src = "//version 1.3 2.0 *\ninside";
+        let filter = parse_filter(&[String::from("1.5")]).unwrap();
+        let r = process_file(
+            &lines(src),
+            CommentStyle::DoubleSlash,
+            &filter,
+            ProcessOptions::default(),
+        );
+        assert_eq!(r.unclosed, vec![String::from("1.3 2.0")]);
     }
 
     #[test]

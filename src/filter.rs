@@ -255,6 +255,47 @@ pub fn passes_filter(version_token: &str, mode: &FilterMode) -> bool {
     passes(version_token, &[], mode, &[])
 }
 
+/// Resolve the "build_upper" version used to evaluate inline range markers
+/// against the active filter. `ONLY` mode has no meaningful upper for range
+/// markers (per spec they're skipped entirely) so this returns `None`.
+pub fn build_upper(mode: &FilterMode) -> Option<Version> {
+    match mode {
+        FilterMode::Only(_) => None,
+        FilterMode::Cumulative(v) | FilterMode::Extract(v) => Some(v.clone()),
+        FilterMode::Range(_, to) => Some(to.clone()),
+        FilterMode::Include(entries) => entries.iter().map(|e| e.to.clone()).max(),
+    }
+}
+
+/// Decide whether a range marker (`//version FROM TO ...`) qualifies.
+///
+/// Condition: `from <= build_upper < to` and the tag filter passes. `ONLY`
+/// mode always rejects range markers per the spec.
+pub fn passes_range_marker(
+    from_token: &str,
+    to_token: &str,
+    block_tags: &[String],
+    mode: &FilterMode,
+    tag_filter: &[String],
+) -> bool {
+    let Some(upper) = build_upper(mode) else {
+        return false;
+    };
+    let Ok(from) = parse_version(from_token) else {
+        return false;
+    };
+    let Ok(to) = parse_version(to_token) else {
+        return false;
+    };
+    if from >= to {
+        return false;
+    }
+    if !(upper >= from && upper < to) {
+        return false;
+    }
+    tag_passes(block_tags, tag_filter)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,6 +424,51 @@ mod tests {
             &parse_version("9.9").unwrap(),
         );
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn range_marker_inclusive_lower_exclusive_upper() {
+        let f = parse_filter(&[s("1.5")]).unwrap();
+        // 1.5 >= 1.3 && 1.5 < 2.0 → pass
+        assert!(passes_range_marker("1.3", "2.0", &[], &f, &[]));
+        // Boundary upper excluded
+        let f2 = parse_filter(&[s("2.0")]).unwrap();
+        assert!(!passes_range_marker("1.3", "2.0", &[], &f2, &[]));
+        // Below from
+        let f3 = parse_filter(&[s("1.2")]).unwrap();
+        assert!(!passes_range_marker("1.3", "2.0", &[], &f3, &[]));
+        // Exact lower bound passes (inclusive)
+        let f4 = parse_filter(&[s("1.3")]).unwrap();
+        assert!(passes_range_marker("1.3", "2.0", &[], &f4, &[]));
+    }
+
+    #[test]
+    fn range_marker_uses_range_upper_for_range_mode() {
+        // Build mode Range(1.5, 1.9) → upper is 1.9
+        let f = parse_filter(&[s("1.5"), s("1.9")]).unwrap();
+        assert!(passes_range_marker("1.3", "2.0", &[], &f, &[]));
+    }
+
+    #[test]
+    fn range_marker_always_skipped_in_only() {
+        let f = parse_filter(&[s("1.5"), s("ONLY")]).unwrap();
+        assert!(!passes_range_marker("1.3", "2.0", &[], &f, &[]));
+    }
+
+    #[test]
+    fn range_marker_invalid_when_from_ge_to() {
+        let f = parse_filter(&[s("1.5")]).unwrap();
+        assert!(!passes_range_marker("2.0", "1.3", &[], &f, &[]));
+        assert!(!passes_range_marker("1.3", "1.3", &[], &f, &[]));
+    }
+
+    #[test]
+    fn range_marker_uses_include_max_to() {
+        let a = parse_include_range("1.1", None).unwrap();
+        let b = parse_include_range("1.5", Some(3)).unwrap(); // 1.5..1.8
+        let f = FilterMode::Include(vec![a, b]);
+        // build_upper = max(1.1, 1.8) = 1.8 → 1.3..2.0 covers 1.8.
+        assert!(passes_range_marker("1.3", "2.0", &[], &f, &[]));
     }
 
     #[test]

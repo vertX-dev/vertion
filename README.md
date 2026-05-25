@@ -50,6 +50,16 @@ vertion build --include                      # build union of all entries
 
 # Post-build commands
 vertion build -v 1.2 --run "npm install" --run "npm run build"
+
+# Wrap: copy project files into an intermediate folder before building.
+# Lets you safely point `-I .` at the project root without colliding with output.
+vertion build -v 1.2 -I . --wrap              # temp wrap (default), cleaned up after build
+vertion build -v 1.2 -I . --wrap perm         # keep the wrap dir for inspection
+vertion build -v 1.2 -I . --wrap temp my_dir  # custom wrap folder name
+
+# Path safety: input outside the project root is a hard error.
+# Use --force to override (prints a warning).
+vertion build -v 1.2 -I /some/other/tree --force
 ```
 
 Run `vertion --help` (or `vertion <subcommand> --help`) for the full flag list — every long flag has a short alias (e.g. `-b` for `build`, `-v` for version, `-I` for `--input`).
@@ -67,10 +77,18 @@ Run `vertion --help` (or `vertion <subcommand> --help`) for the full flag list �
 #version 1.2 *                        # close block
 
 //version ALL                         // always included
+
+//version 1.3 2.0 *                   // range block: from <= build_upper < to
+  ...code...
+//version 1.3 2.0 *
+
+//version 1.3 2.0                     // inline range: applies to next line only
+doSomethingFun();
 ```
 
-- Same syntax for open and close — Vertion pairs them via a stack.
-- Trailing `*` is optional but recommended (it disambiguates from regular `// version 2 ...` comments).
+- Same syntax for open and close — Vertion pairs them via a stack (matched on `(version, to)`).
+- Trailing `*` is optional but recommended on single-version markers; **required** on range blocks (two versions + `*`). Two versions **without** `*` is an inline range.
+- Range marker condition: `from <= build_upper < to` (lower inclusive, upper exclusive). Range markers are skipped entirely in `ONLY` mode.
 - Nesting rule: every block in the chain must independently pass the filter.
 
 ## Config (`vertion.toml`)

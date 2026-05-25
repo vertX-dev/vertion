@@ -68,13 +68,18 @@ pub struct LastSection {
     #[serde(default)]
     pub auto: bool,
     #[serde(default)]
-    pub mode: String, // "cumulative" | "range" | "only"
+    pub mode: String, // "cumulative" | "range" | "only" | "include"
     #[serde(default)]
     pub range_from: String,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
     pub profile: String,
+    /// Last wrap mode used: "temp" / "perm" / empty for disabled.
+    #[serde(default)]
+    pub wrap: String,
+    #[serde(default)]
+    pub wrap_name: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -86,6 +91,10 @@ pub struct ProfileSection {
     pub increment: Option<String>,
     #[serde(default)]
     pub run: Vec<String>,
+    /// Wrap mode: "temp" or "perm". `None` disables wrap.
+    pub wrap: Option<String>,
+    /// Wrap folder name. Defaults to `.vertion_wrap`.
+    pub wrap_name: Option<String>,
 }
 
 fn default_input() -> PathBuf {
@@ -129,6 +138,8 @@ impl VertionConfig {
         let mut ignore = self.project.ignore.clone();
         let mut increment = self.build.increment.clone();
         let mut run: Vec<String> = Vec::new();
+        let mut wrap: Option<String> = None;
+        let mut wrap_name: Option<String> = None;
 
         if let Some(n) = name {
             let prof = self.profiles.get(n).ok_or_else(|| {
@@ -153,6 +164,8 @@ impl VertionConfig {
                 increment = i.clone();
             }
             run = prof.run.clone();
+            wrap = prof.wrap.clone();
+            wrap_name = prof.wrap_name.clone();
         }
 
         if IncrementLevel::parse(&increment).is_none() {
@@ -168,6 +181,8 @@ impl VertionConfig {
             increment: IncrementLevel::parse(&increment).unwrap(),
             profile: name.map(|s| s.to_string()),
             run,
+            wrap,
+            wrap_name,
         })
     }
 
@@ -184,6 +199,8 @@ pub struct ResolvedSettings {
     pub increment: IncrementLevel,
     pub profile: Option<String>,
     pub run: Vec<String>,
+    pub wrap: Option<String>,
+    pub wrap_name: Option<String>,
 }
 
 #[derive(Debug)]
@@ -259,6 +276,7 @@ pub fn write_default_template(project_root: &Path) -> Result<PathBuf, SettingsEr
     Ok(p)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn save_last(
     project_root: &Path,
     filter: &FilterMode,
@@ -266,6 +284,8 @@ pub fn save_last(
     auto: bool,
     tags: &[String],
     profile: Option<&str>,
+    wrap: Option<&str>,
+    wrap_name: Option<&str>,
 ) -> Result<(), SettingsError> {
     let mut cfg = load_or_default(project_root)?;
     cfg.last = LastSection {
@@ -279,6 +299,8 @@ pub fn save_last(
         },
         tags: tags.to_vec(),
         profile: profile.unwrap_or("").to_string(),
+        wrap: wrap.unwrap_or("").to_string(),
+        wrap_name: wrap_name.unwrap_or("").to_string(),
     };
     save(&cfg, project_root)
 }
@@ -335,6 +357,8 @@ mod tests {
                 ignore: vec![PathBuf::from("tests")],
                 increment: Some("minor".into()),
                 run: Vec::new(),
+                wrap: None,
+                wrap_name: None,
             },
         );
         save(&cfg, &dir).unwrap();
@@ -349,7 +373,7 @@ mod tests {
     fn save_last_records_mode() {
         let dir = tmp("last");
         let filter = parse_filter(&[String::from("1.2")]).unwrap();
-        save_last(&dir, &filter, true, false, &[], None).unwrap();
+        save_last(&dir, &filter, true, false, &[], None, None, None).unwrap();
         let loaded = load_or_default(&dir).unwrap();
         assert_eq!(loaded.last.mode, "cumulative");
         assert_eq!(loaded.last.version, "1.2.0");
