@@ -20,6 +20,11 @@ vertion.toml.local
 *.swo
 *~
 
+# VSCode extension build artifacts
+/editor/vscode/out/
+/editor/vscode/node_modules/
+/editor/vscode/*.vsix
+
 # OS
 .DS_Store
 Thumbs.db
