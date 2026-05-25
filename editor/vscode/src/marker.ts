@@ -4,7 +4,7 @@
 //
 // Pure module. No VSCode dependency. Unit-tested via vitest.
 
-export type CommentStyle = "//" | "#";
+export type CommentStyle = '//' | '#';
 
 export interface MarkerSpan {
     /** Column index (UTF-16 code unit, matching VSCode positions). Inclusive. */
@@ -27,14 +27,9 @@ export interface Marker {
     starSpan: MarkerSpan | null;
 }
 
-export type MarkerKind =
-    | { kind: "Versioned"; marker: Marker }
-    | { kind: "All"; marker: Marker }
-    | { kind: "InlineRange"; marker: Marker }
-    | { kind: "Malformed"; reason: string }
-    | { kind: "None" };
+export type MarkerKind = { kind: 'Versioned'; marker: Marker } | { kind: 'All'; marker: Marker } | { kind: 'InlineRange'; marker: Marker } | { kind: 'Malformed'; reason: string } | { kind: 'None' };
 
-const KEYWORD = "version";
+const KEYWORD = 'version';
 
 /**
  * Parse a single line and return its marker classification.
@@ -56,27 +51,27 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
 
     // 2. Strip comment prefix.
     if (!line.startsWith(style, cursor)) {
-        return { kind: "None" };
+        return { kind: 'None' };
     }
     cursor += style.length;
 
     // 3. Skip whitespace, then keyword.
     cursor = skipWhitespace(line, cursor);
     if (!line.startsWith(KEYWORD, cursor)) {
-        return { kind: "None" };
+        return { kind: 'None' };
     }
     cursor += KEYWORD.length;
 
     // 4. Require whitespace or EOL right after the keyword.
     if (cursor >= line.length) {
-        return malformed("missing version or `ALL` after `version`");
+        return malformed('missing version or `ALL` after `version`');
     }
     if (!isWhitespace(line.charAt(cursor))) {
-        return { kind: "None" };
+        return { kind: 'None' };
     }
     cursor = skipWhitespace(line, cursor);
     if (cursor >= line.length) {
-        return malformed("missing version or `ALL` after `version`");
+        return malformed('missing version or `ALL` after `version`');
     }
 
     // 5. First token: ALL or a version. Ends at next whitespace or `[`.
@@ -90,19 +85,14 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
     };
     cursor = skipWhitespace(line, cursor);
 
-    const isAll = versionToken.toUpperCase() === "ALL";
+    const isAll = versionToken.toUpperCase() === 'ALL';
     if (!isAll && !isValidVersion(versionToken)) {
         return malformed(`unparseable version \`${versionToken}\``);
     }
 
     // 6. Optional second version token (`to`) — only for non-ALL.
     let toSpan: MarkerSpan | null = null;
-    if (
-        !isAll &&
-        cursor < line.length &&
-        line.charAt(cursor) !== "[" &&
-        line.charAt(cursor) !== "*"
-    ) {
+    if (!isAll && cursor < line.length && line.charAt(cursor) !== '[' && line.charAt(cursor) !== '*') {
         const nextStart = cursor;
         const nextEnd = findTokenEnd(line, cursor);
         const nextToken = line.slice(nextStart, nextEnd);
@@ -117,22 +107,22 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
 
     // 7. Optional [tags].
     const tagSpans: MarkerSpan[] = [];
-    if (cursor < line.length && line.charAt(cursor) === "[") {
+    if (cursor < line.length && line.charAt(cursor) === '[') {
         const openBracket = cursor;
-        const closeBracket = line.indexOf("]", openBracket + 1);
+        const closeBracket = line.indexOf(']', openBracket + 1);
         if (closeBracket < 0) {
-            return malformed("unterminated `[` tag list");
+            return malformed('unterminated `[` tag list');
         }
         // Split tag body on commas, tracking column ranges.
         let tagSearch = openBracket + 1;
         while (tagSearch <= closeBracket) {
             const commaOrEnd = nextCommaOrEnd(line, tagSearch, closeBracket);
             const raw = line.slice(tagSearch, commaOrEnd);
-            const lead = raw.length - raw.replace(/^\s+/, "").length;
-            const trail = raw.length - raw.replace(/\s+$/, "").length;
+            const lead = raw.length - raw.replace(/^\s+/, '').length;
+            const trail = raw.length - raw.replace(/\s+$/, '').length;
             const trimmed = raw.slice(lead, raw.length - trail);
             if (trimmed.length === 0) {
-                return malformed("empty tag in list");
+                return malformed('empty tag in list');
             }
             tagSpans.push({
                 start: tagSearch + lead,
@@ -146,14 +136,14 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
 
     // 8. Optional `*`.
     let starSpan: MarkerSpan | null = null;
-    if (cursor < line.length && line.charAt(cursor) === "*") {
-        starSpan = { start: cursor, end: cursor + 1, text: "*" };
+    if (cursor < line.length && line.charAt(cursor) === '*') {
+        starSpan = { start: cursor, end: cursor + 1, text: '*' };
         cursor = skipWhitespace(line, cursor + 1);
     }
 
     // 9. Trailing content is malformed.
     if (cursor < line.length) {
-        const trailing = line.slice(cursor).replace(/\s+$/, "");
+        const trailing = line.slice(cursor).replace(/\s+$/, '');
         return malformed(`unexpected trailing content \`${trailing}\``);
     }
 
@@ -162,9 +152,7 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
         const fromV = parseVersionTuple(versionToken);
         const toV = parseVersionTuple(toSpan.text);
         if (fromV && toV && compareVersionTuple(fromV, toV) >= 0) {
-            return malformed(
-                `range marker has from >= to (${versionToken} >= ${toSpan.text})`,
-            );
+            return malformed(`range marker has from >= to (${versionToken} >= ${toSpan.text})`);
         }
     }
 
@@ -180,16 +168,16 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
         starSpan,
     };
     if (isAll) {
-        return { kind: "All", marker };
+        return { kind: 'All', marker };
     }
     if (marker.to !== null && !hasStar) {
-        return { kind: "InlineRange", marker };
+        return { kind: 'InlineRange', marker };
     }
-    return { kind: "Versioned", marker };
+    return { kind: 'Versioned', marker };
 }
 
 function malformed(reason: string): MarkerKind {
-    return { kind: "Malformed", reason };
+    return { kind: 'Malformed', reason };
 }
 
 function isWhitespace(ch: string): boolean {
@@ -212,7 +200,7 @@ function findTokenEnd(s: string, from: number): number {
     let i = from;
     while (i < s.length) {
         const c = s.charAt(i);
-        if (isWhitespace(c) || c === "[") return i;
+        if (isWhitespace(c) || c === '[') return i;
         i++;
     }
     return i;
@@ -221,7 +209,7 @@ function findTokenEnd(s: string, from: number): number {
 function nextCommaOrEnd(s: string, from: number, end: number): number {
     let i = from;
     while (i < end) {
-        if (s.charAt(i) === ",") return i;
+        if (s.charAt(i) === ',') return i;
         i++;
     }
     return end;
@@ -267,13 +255,13 @@ export function parseVersionTuple(raw: string): VersionTuple | null {
         major,
         minor,
         patch,
-        pre: m[4] ?? "",
-        build: m[5] ?? "",
+        pre: m[4] ?? '',
+        build: m[5] ?? '',
     };
 }
 
 function hasLeadingZero(s: string): boolean {
-    return s.length > 1 && s.charAt(0) === "0";
+    return s.length > 1 && s.charAt(0) === '0';
 }
 
 export function isValidVersion(raw: string): boolean {
@@ -285,15 +273,15 @@ export function compareVersionTuple(a: VersionTuple, b: VersionTuple): number {
     if (a.minor !== b.minor) return a.minor - b.minor;
     if (a.patch !== b.patch) return a.patch - b.patch;
     // Pre-release: empty (no pre) ranks higher than any pre-release.
-    if (a.pre === "" && b.pre !== "") return 1;
-    if (a.pre !== "" && b.pre === "") return -1;
+    if (a.pre === '' && b.pre !== '') return 1;
+    if (a.pre !== '' && b.pre === '') return -1;
     if (a.pre === b.pre) return 0;
     return comparePreRelease(a.pre, b.pre);
 }
 
 function comparePreRelease(a: string, b: string): number {
-    const as = a.split(".");
-    const bs = b.split(".");
+    const as = a.split('.');
+    const bs = b.split('.');
     const n = Math.min(as.length, bs.length);
     for (let i = 0; i < n; i++) {
         const ai = as[i];
@@ -320,7 +308,7 @@ function comparePreRelease(a: string, b: string): number {
 // pair when their (version, to) tuples are equal. ALL pairs on the literal
 // "ALL" (case-insensitive).
 
-export function markerPairKey(marker: Marker, kind: "Versioned" | "All"): string {
-    if (kind === "All") return "ALL";
-    return `V:${marker.version} ${marker.to ?? ""}`;
+export function markerPairKey(marker: Marker, kind: 'Versioned' | 'All'): string {
+    if (kind === 'All') return 'ALL';
+    return `V:${marker.version} ${marker.to ?? ''}`;
 }
