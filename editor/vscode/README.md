@@ -7,9 +7,28 @@ Editor support for [Vertion](https://github.com/vertX-dev/vertion) version marke
 - **Syntax highlighting** for marker lines (`//version 1.2 *`, `//version 1.3 2.0 *`, `//version 1.2 [tag] *`, `//version ALL`, and the `#` variants).
 - **Auto-close on Enter** — typing an opener like `//version 1.2 *` and pressing Enter inserts a matching close line beneath the cursor. ALL openers also auto-close. Inline range markers (no `*`) do not auto-close.
 - **Rename pair (F2)** — renaming the version, the upper bound, or a tag on one marker line updates its partner.
-- **Bracket-match highlight** — placing the cursor on an open or close marker highlights both lines.
+- **Pair highlight** — placing the cursor on an open or close marker highlights both lines. Colors are configurable (see Settings below).
 - **Folding** — every paired block contributes a fold range.
 - **Snippets** — `verb`, `vera`, `vert`, `verrb`, `verr` for the five marker shapes (slash variant); same prefixes with `#` for hash-comment languages.
+- **Commands** — `Vertion: Jump to Matching Marker` and `Vertion: Wrap Selection in Version Block` (Command Palette + rebindable keys).
+
+## Commands & keybindings
+
+| Command | Default keybinding | What it does |
+| --- | --- | --- |
+| `vertion.jumpToMatchingMarker` | `Ctrl+K Ctrl+M` (`Cmd+K Cmd+M` on macOS) | Move the cursor to the partner of the marker on the current line. |
+| `vertion.wrapSelectionInBlock` | `Ctrl+K Ctrl+V` (`Cmd+K Cmd+V` on macOS) | Prompt for a version (or `ALL`) and wrap the selection in open/close markers. |
+
+Rebind either via VSCode's keyboard shortcuts editor (`Ctrl+K Ctrl+S`) — search for "Vertion".
+
+## Settings
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| `vertion.highlight.enabled` | `true` | Highlight matching marker pairs when the cursor is on one. |
+| `vertion.highlight.backgroundColor` | `#3a8bff33` | Background color applied to both lines of a matched pair. Any valid CSS color. |
+| `vertion.highlight.borderColor` | `#3a8bffaa` | Border color applied to both lines of a matched pair. Leave empty to hide the border. |
+| `vertion.highlight.borderWidth` | `1px` | CSS border width. Set to `0` to hide the border. |
 
 ## Install
 

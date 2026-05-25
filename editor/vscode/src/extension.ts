@@ -5,6 +5,7 @@ import { registerAutoClose } from "./autoClose";
 import { registerRename } from "./rename";
 import { registerFolding } from "./folding";
 import { registerHighlight } from "./highlight";
+import { registerCommands } from "./commands";
 
 // Language → comment style. Mirrors `src/config.rs::detect_comment_style`.
 // Unknown languages default to `//` (matches Rust default).
@@ -46,6 +47,7 @@ export function activate(ctx: vscode.ExtensionContext): void {
     registerRename(ctx, DOCUMENT_SELECTOR);
     registerFolding(ctx, DOCUMENT_SELECTOR);
     registerHighlight(ctx, DOCUMENT_SELECTOR);
+    registerCommands(ctx);
 
     ctx.subscriptions.push(
         vscode.workspace.onDidCloseTextDocument((doc) => {
