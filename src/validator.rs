@@ -82,7 +82,7 @@ fn validate_lines(
                     message: format!("malformed marker: {}", reason),
                 });
             }
-            MarkerKind::Versioned(m) | MarkerKind::All(m) => {
+            MarkerKind::Versioned(m) | MarkerKind::All(m) | MarkerKind::Exclude(m) => {
                 let top_matches = stack
                     .last()
                     .map(|(v, t, _)| v == &m.version && t == &m.to)

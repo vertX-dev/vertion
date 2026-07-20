@@ -3,11 +3,22 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::filter::{parse_version, FilterMode, IncludeEntry, IncrementLevel};
 
-pub const DEFAULT_CONFIG_NAME: &str = "vertion.toml";
+pub const DEFAULT_CONFIG_NAME: &str = "vertion.cfg";
+/// Older config name, still read (and written back to) if present so existing
+/// projects don't break on upgrade.
+pub const LEGACY_CONFIG_NAME: &str = "vertion.toml";
+
+/// Whole-file version assignment: a concrete version, or `EXC` (always exclude).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileVersionSpec {
+    At(Version),
+    Exclude,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VertionConfig {
@@ -20,6 +31,23 @@ pub struct VertionConfig {
     pub profiles: BTreeMap<String, ProfileSection>,
     #[serde(default, rename = "include")]
     pub include: Vec<IncludeEntryConfig>,
+    /// Whole-file version assignments for files that can't carry comment markers
+    /// (images, JSON, binaries). A file is excluded from the build when its
+    /// assigned version fails the active filter; otherwise it copies as-is.
+    #[serde(default, rename = "files")]
+    pub files: Vec<FileVersion>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileVersion {
+    /// Path relative to the input directory (forward slashes; leading `./` optional).
+    pub path: String,
+    pub version: String,
+}
+
+/// Normalize a path for matching: forward slashes, no leading `./`.
+pub fn normalize_path_key(s: &str) -> String {
+    s.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -122,6 +150,7 @@ impl VertionConfig {
             last: LastSection::default(),
             profiles: BTreeMap::new(),
             include: Vec::new(),
+            files: Vec::new(),
         }
     }
 
@@ -143,7 +172,7 @@ impl VertionConfig {
 
         if let Some(n) = name {
             let prof = self.profiles.get(n).ok_or_else(|| {
-                SettingsError(format!("profile `{}` not found in vertion.toml", n))
+                SettingsError(format!("profile `{}` not found in vertion.cfg", n))
             })?;
             if let Some(p) = &prof.input {
                 input = p.clone();
@@ -190,6 +219,23 @@ impl VertionConfig {
     pub fn include_entries(&self) -> Result<Vec<IncludeEntry>, SettingsError> {
         self.include.iter().map(|c| c.parse()).collect()
     }
+
+    /// Parse `[[files]]` into `(normalized_path, spec)` pairs.
+    pub fn file_versions(&self) -> Result<Vec<(String, FileVersionSpec)>, SettingsError> {
+        self.files
+            .iter()
+            .map(|f| {
+                let spec = if f.version.eq_ignore_ascii_case("EXC") {
+                    FileVersionSpec::Exclude
+                } else {
+                    FileVersionSpec::At(
+                        parse_version(&f.version).map_err(|e| SettingsError(e.to_string()))?,
+                    )
+                };
+                Ok((normalize_path_key(&f.path), spec))
+            })
+            .collect()
+    }
 }
 
 pub struct ResolvedSettings {
@@ -228,12 +274,27 @@ impl From<toml::ser::Error> for SettingsError {
     }
 }
 
+/// Where a new config is written.
 pub fn config_path(project_root: &Path) -> PathBuf {
     project_root.join(DEFAULT_CONFIG_NAME)
 }
 
+/// The config file to read/write: `.cfg` if present, else legacy `.toml` if
+/// present, else the default `.cfg` path (for creation).
+pub fn active_config_path(project_root: &Path) -> PathBuf {
+    let cfg = config_path(project_root);
+    if cfg.exists() {
+        return cfg;
+    }
+    let legacy = project_root.join(LEGACY_CONFIG_NAME);
+    if legacy.exists() {
+        return legacy;
+    }
+    cfg
+}
+
 pub fn load_or_default(project_root: &Path) -> Result<VertionConfig, SettingsError> {
-    let p = config_path(project_root);
+    let p = active_config_path(project_root);
     if !p.exists() {
         return Ok(VertionConfig::default_template());
     }
@@ -244,7 +305,7 @@ pub fn load_or_default(project_root: &Path) -> Result<VertionConfig, SettingsErr
 
 #[allow(dead_code)]
 pub fn load(project_root: &Path) -> Result<Option<VertionConfig>, SettingsError> {
-    let p = config_path(project_root);
+    let p = active_config_path(project_root);
     if !p.exists() {
         return Ok(None);
     }
@@ -255,15 +316,16 @@ pub fn load(project_root: &Path) -> Result<Option<VertionConfig>, SettingsError>
 
 pub fn save(cfg: &VertionConfig, project_root: &Path) -> Result<(), SettingsError> {
     let text = toml::to_string_pretty(cfg)?;
-    fs::write(config_path(project_root), text)?;
+    fs::write(active_config_path(project_root), text)?;
     Ok(())
 }
 
 pub fn write_default_template(project_root: &Path) -> Result<PathBuf, SettingsError> {
-    let p = config_path(project_root);
-    if p.exists() {
-        return Err(SettingsError(format!("{} already exists", p.display())));
+    let existing = active_config_path(project_root);
+    if existing.exists() {
+        return Err(SettingsError(format!("{} already exists", existing.display())));
     }
+    let p = config_path(project_root);
     let cfg = VertionConfig::default_template();
     let body = toml::to_string_pretty(&cfg)?;
     let commented = format!(

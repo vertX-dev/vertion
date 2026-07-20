@@ -12,6 +12,7 @@ use walkdir::WalkDir;
 use crate::config::detect_comment_style;
 use crate::filter::FilterMode;
 use crate::parser::{process_file, ProcessOptions};
+use crate::settings::{normalize_path_key, FileVersionSpec};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct BuildResult {
@@ -37,6 +38,11 @@ pub struct BuildOptions<'a> {
     pub preserve_context: bool,
     pub strict: bool,
     pub show_progress: bool,
+    /// Strip whole-line comments from included output (`--no-comments`).
+    pub no_comments: bool,
+    /// Whole-file version assignments (normalized rel path → spec) from config.
+    /// A file is excluded when its version fails the filter, or its spec is `EXC`.
+    pub file_versions: &'a [(String, FileVersionSpec)],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -96,6 +102,13 @@ pub fn build_project(opts: BuildOptions<'_>) -> Result<BuildResult, io::Error> {
             continue;
         }
         let rel = path.strip_prefix(&input_abs).unwrap_or(path).to_path_buf();
+        // Whole-file version gate: exclude files whose config-assigned version
+        // fails the filter (or is `EXC`). Passing files fall through and copy as-is.
+        match file_version_for(&rel, opts.file_versions) {
+            Some(FileVersionSpec::Exclude) => continue,
+            Some(FileVersionSpec::At(v)) if !opts.filter.version_matches(v) => continue,
+            _ => {}
+        }
         let dest = output_abs.join(&rel);
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent)?;
@@ -189,10 +202,12 @@ pub fn build_file(
     let process_opts = ProcessOptions {
         tag_filter: opts.tags,
         extract_preserve_context: opts.preserve_context,
+        strip_comments: opts.no_comments,
     };
     let result = process_file(&lines, style, opts.filter, process_opts);
 
-    if !result.had_markers {
+    // Nothing removed (no markers, no comments stripped) → copy verbatim.
+    if !result.had_markers && result.stripped == 0 {
         fs::copy(src, dest)?;
         return Ok(FileOutcome {
             processed: false,
@@ -256,6 +271,17 @@ fn write_manifest(output_dir: &Path, result: &BuildResult) -> io::Result<()> {
     fs::write(manifest_path, json)
 }
 
+fn file_version_for<'a>(
+    rel: &Path,
+    map: &'a [(String, FileVersionSpec)],
+) -> Option<&'a FileVersionSpec> {
+    if map.is_empty() {
+        return None;
+    }
+    let key = normalize_path_key(&rel.to_string_lossy());
+    map.iter().find(|(p, _)| *p == key).map(|(_, v)| v)
+}
+
 fn is_ignored(path: &Path, ignored: &[PathBuf]) -> bool {
     let abs = absolute(path);
     ignored.iter().any(|ig| abs.starts_with(ig))
@@ -287,7 +313,7 @@ fn absolute(p: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter::parse_filter;
+    use crate::filter::{parse_filter, parse_version};
     use std::io::Write;
 
     fn tmpdir(name: &str) -> PathBuf {
@@ -325,6 +351,8 @@ mod tests {
             preserve_context: false,
             strict: false,
             show_progress: false,
+            no_comments: false,
+            file_versions: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(result.output.ends_with("1.0.0"));
@@ -332,6 +360,96 @@ mod tests {
         assert_eq!(a, "keep\ndone\n");
         let manifest = fs::read_to_string(result.output.join("vertion.manifest.json")).unwrap();
         assert!(manifest.contains("\"files_processed\""));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_version_excludes_and_keeps() {
+        let root = tmpdir("filever");
+        let input = root.join("src");
+        let output = root.join("build");
+        write_file(&input.join("logo.png"), "binary-ish");
+        write_file(&input.join("data.json"), "{}");
+        let filter = parse_filter(&[String::from("1.0")]).unwrap();
+        // logo assigned 2.0 (fails <=1.0 → excluded); data assigned 1.0 (passes → kept).
+        let file_versions = vec![
+            (
+                "logo.png".to_string(),
+                FileVersionSpec::At(parse_version("2.0").unwrap()),
+            ),
+            (
+                "data.json".to_string(),
+                FileVersionSpec::At(parse_version("1.0").unwrap()),
+            ),
+        ];
+        let opts = BuildOptions {
+            input: &input,
+            output_root: &output,
+            filter: &filter,
+            ignore: &[],
+            tags: &[],
+            dev: false,
+            preserve_context: false,
+            strict: false,
+            show_progress: false,
+            no_comments: false,
+            file_versions: &file_versions,
+        };
+        let result = build_project(opts).unwrap();
+        assert!(!result.output.join("logo.png").exists());
+        assert!(result.output.join("data.json").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_exc_always_excluded() {
+        let root = tmpdir("fileexc");
+        let input = root.join("src");
+        let output = root.join("build");
+        write_file(&input.join("draft.png"), "wip");
+        let filter = parse_filter(&[String::from("9.9")]).unwrap();
+        let file_versions = vec![("draft.png".to_string(), FileVersionSpec::Exclude)];
+        let opts = BuildOptions {
+            input: &input,
+            output_root: &output,
+            filter: &filter,
+            ignore: &[],
+            tags: &[],
+            dev: false,
+            preserve_context: false,
+            strict: false,
+            show_progress: false,
+            no_comments: false,
+            file_versions: &file_versions,
+        };
+        let result = build_project(opts).unwrap();
+        assert!(!result.output.join("draft.png").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn no_comments_strips_marker_free_file() {
+        let root = tmpdir("nocomments");
+        let input = root.join("src");
+        let output = root.join("build");
+        write_file(&input.join("a.js"), "// doc\ncode;\n");
+        let filter = parse_filter(&[String::from("1.0")]).unwrap();
+        let opts = BuildOptions {
+            input: &input,
+            output_root: &output,
+            filter: &filter,
+            ignore: &[],
+            tags: &[],
+            dev: false,
+            preserve_context: false,
+            strict: false,
+            show_progress: false,
+            no_comments: true,
+            file_versions: &[],
+        };
+        let result = build_project(opts).unwrap();
+        let a = fs::read_to_string(result.output.join("a.js")).unwrap();
+        assert_eq!(a, "code;\n");
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -354,6 +472,8 @@ mod tests {
             preserve_context: false,
             strict: false,
             show_progress: false,
+            no_comments: false,
+            file_versions: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(result.output.join("keep.js").exists());
@@ -378,6 +498,8 @@ mod tests {
             preserve_context: false,
             strict: false,
             show_progress: false,
+            no_comments: false,
+            file_versions: &[],
         };
         let result = build_project(opts).unwrap();
         let name = result
@@ -408,6 +530,8 @@ mod tests {
             preserve_context: false,
             strict: true,
             show_progress: false,
+            no_comments: false,
+            file_versions: &[],
         };
         assert!(build_project(opts).is_err());
         let _ = fs::remove_dir_all(&root);

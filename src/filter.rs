@@ -236,6 +236,10 @@ pub fn passes(
     mode: &FilterMode,
     tag_filter: &[String],
 ) -> bool {
+    // EXC blocks are excluded from every build, regardless of filter or tags.
+    if version_token.eq_ignore_ascii_case("EXC") {
+        return false;
+    }
     if version_token.eq_ignore_ascii_case("ALL") {
         return tag_passes(block_tags, tag_filter);
     }
@@ -469,6 +473,15 @@ mod tests {
         let f = FilterMode::Include(vec![a, b]);
         // build_upper = max(1.1, 1.8) = 1.8 → 1.3..2.0 covers 1.8.
         assert!(passes_range_marker("1.3", "2.0", &[], &f, &[]));
+    }
+
+    #[test]
+    fn exc_never_passes() {
+        let f = parse_filter(&[s("1.2")]).unwrap();
+        assert!(!passes("EXC", &[], &f, &[]));
+        assert!(!passes("exc", &[], &f, &[]));
+        // Even a wide range and ONLY reject EXC.
+        assert!(!passes("EXC", &[], &parse_filter(&[s("0.0"), s("9.9")]).unwrap(), &[]));
     }
 
     #[test]

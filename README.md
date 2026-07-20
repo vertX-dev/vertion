@@ -29,10 +29,11 @@ Requires Rust **1.74** or newer.
 ## Quick start
 
 ```sh
-vertion init                                 # create vertion.toml
+vertion init                                 # create vertion.cfg
 vertion build -v 1.2                         # cumulative up to 1.2
 vertion build -v 1.1 1.3                     # range
 vertion build -v 1.2 ONLY                    # exactly 1.2 + base
+vertion build -v 1.2 --noc                   # also strip whole-line comments
 vertion extract 1.2 --preserve-context       # only 1.2 blocks + base
 vertion show src/foo.js --tags               # list version blocks
 vertion graph src/foo.js                     # tree view
@@ -48,8 +49,9 @@ vertion include --show                       # list entries
 vertion include --remove 1.5 1.7             # trim or delete an entry
 vertion build --include                      # build union of all entries
 
-# Post-build commands
+# Post-build commands (also re-run after every `watch` rebuild)
 vertion build -v 1.2 --run "npm install" --run "npm run build"
+vertion watch -v 1.2 --run "npm run build"   # rebuild + re-run on every change
 
 # Wrap: copy project files into an intermediate folder before building.
 # Lets you safely point `-I .` at the project root without colliding with output.
@@ -78,6 +80,10 @@ Run `vertion --help` (or `vertion <subcommand> --help`) for the full flag list â
 
 //version ALL                         // always included
 
+//version EXC                         // always EXcluded (dropped from every build)
+  ...code...
+//version EXC
+
 //version 1.3 2.0 *                   // range block: from <= build_upper < to
   ...code...
 //version 1.3 2.0 *
@@ -90,8 +96,10 @@ doSomethingFun();
 - Trailing `*` is optional but recommended on single-version markers; **required** on range blocks (two versions + `*`). Two versions **without** `*` is an inline range.
 - Range marker condition: `from <= build_upper < to` (lower inclusive, upper exclusive). Range markers are skipped entirely in `ONLY` mode.
 - Nesting rule: every block in the chain must independently pass the filter.
+- `ALL` blocks are always kept; `EXC` blocks are always dropped (an `EXC` ancestor excludes everything inside it, regardless of filter).
+- `--no-comments` (`--noc`) strips whole-line comments from the built output. Trailing/inline comments and `//` inside strings are left alone.
 
-## Config (`vertion.toml`)
+## Config (`vertion.cfg`)
 
 ```toml
 [project]
@@ -123,9 +131,27 @@ to   = "1.1"
 [[include]]
 from = "1.5"
 to   = "1.8"
+
+# Whole-file version assignments for files that can't carry comment markers
+# (images, JSON, binaries). Path is relative to the input dir.
+[[files]]
+path = "assets/logo.png"
+version = "2.0"
+
+[[files]]
+path = "config/data.json"
+version = "1.0"
+
+[[files]]
+path = "assets/wip.psd"
+version = "EXC"          # always excluded, like an EXC block
 ```
 
 Use a profile with `--profile prod`. `--auto` increments `[project].version` after a successful build (illegal with `ONLY`, `--include`, or `--last ONLY`).
+
+`[[files]]` assigns a version to a whole file. The file is excluded from the build when its version fails the active filter (e.g. `logo.png` above is dropped from any build below `2.0`); otherwise it copies as-is. Use `version = "EXC"` to exclude a file from every build. Applies to `build`, `extract`, and `watch`.
+
+> The config file is `vertion.cfg` (TOML syntax). A legacy `vertion.toml` is still read and written back to if present, so existing projects keep working â€” rename it to `vertion.cfg` when convenient.
 
 ## Performance notes
 

@@ -1,0 +1,26 @@
+include = []
+
+[project]
+version = "0.1.0"
+input = "./src"
+output = "./build"
+ignore = [
+    "./build",
+    "./node_modules",
+]
+
+[build]
+increment = "minor"
+
+[last]
+version = "0.2.0"
+dev = false
+auto = false
+mode = "cumulative"
+range_from = ""
+tags = []
+profile = ""
+wrap = ""
+wrap_name = ""
+
+[profiles]

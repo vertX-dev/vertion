@@ -34,7 +34,7 @@ pub fn collect_blocks(lines: &[String], style: CommentStyle) -> Vec<Block> {
     for (idx, line) in lines.iter().enumerate() {
         let line_no = idx + 1;
         match detect_marker(line, style) {
-            MarkerKind::Versioned(m) | MarkerKind::All(m) => {
+            MarkerKind::Versioned(m) | MarkerKind::All(m) | MarkerKind::Exclude(m) => {
                 let top_match = stack
                     .last()
                     .map(|b| b.version == m.version && b.to == m.to)

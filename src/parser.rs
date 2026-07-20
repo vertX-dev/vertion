@@ -17,6 +17,8 @@ pub enum MarkerKind {
     Versioned(Marker),
     /// Explicit `ALL` marker — a block whose contents are always included.
     All(Marker),
+    /// Explicit `EXC` marker — a block whose contents are always excluded.
+    Exclude(Marker),
     /// Inline range marker (`//version 1.3 2.0` with no `*`) — affects only the next line.
     InlineRange(Marker),
     /// Malformed marker: looks like a marker but couldn't be parsed.
@@ -69,13 +71,15 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
     cursor = cursor[token_end..].trim_start();
 
     let is_all = token.eq_ignore_ascii_case("ALL");
-    if !is_all && parse_version(token).is_err() {
+    let is_exc = token.eq_ignore_ascii_case("EXC");
+    let is_keyword = is_all || is_exc;
+    if !is_keyword && parse_version(token).is_err() {
         return MarkerKind::Malformed(format!("unparseable version `{}`", token));
     }
 
-    // Optional second version token (range marker upper bound). Only valid for non-ALL.
+    // Optional second version token (range marker upper bound). Only valid for a version.
     let mut to_token: Option<String> = None;
-    if !is_all && !cursor.is_empty() && !cursor.starts_with('[') && !cursor.starts_with('*') {
+    if !is_keyword && !cursor.is_empty() && !cursor.starts_with('[') && !cursor.starts_with('*') {
         let next_end = cursor
             .find(|c: char| c.is_whitespace() || c == '[')
             .unwrap_or(cursor.len());
@@ -136,6 +140,8 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
     };
     if is_all {
         MarkerKind::All(marker)
+    } else if is_exc {
+        MarkerKind::Exclude(marker)
     } else if marker.to.is_some() && !has_star {
         MarkerKind::InlineRange(marker)
     } else {
@@ -156,6 +162,15 @@ pub struct ProcessResult {
 pub struct ProcessOptions<'a> {
     pub tag_filter: &'a [String],
     pub extract_preserve_context: bool,
+    /// Strip whole-line comments (non-marker) from included output.
+    pub strip_comments: bool,
+}
+
+/// A whole-line comment: first non-whitespace char begins the comment prefix.
+/// ponytail: whole-line only — trailing/inline comments and `//` inside string
+/// literals are left alone (stripping them needs a real lexer and would corrupt code).
+fn is_line_comment(line: &str, style: CommentStyle) -> bool {
+    line.trim_start().starts_with(style.prefix())
 }
 
 pub fn process_file(
@@ -202,6 +217,19 @@ pub fn process_file(
                     stack.push(m);
                 }
             }
+            MarkerKind::Exclude(m) => {
+                had_markers = true;
+                stripped += 1;
+                if stack
+                    .last()
+                    .map(|t| t.version.eq_ignore_ascii_case("EXC"))
+                    .unwrap_or(false)
+                {
+                    stack.pop();
+                } else {
+                    stack.push(m);
+                }
+            }
             MarkerKind::InlineRange(m) => {
                 had_markers = true;
                 stripped += 1;
@@ -241,7 +269,9 @@ pub fn process_file(
                 } else {
                     decide_inclusion(&stack, filter, opts, extract)
                 };
-                if include {
+                if include && opts.strip_comments && is_line_comment(line, style) {
+                    stripped += 1;
+                } else if include {
                     out.push(line.clone());
                 } else {
                     stripped += 1;
@@ -553,6 +583,7 @@ tail";
         let opts = ProcessOptions {
             tag_filter: &[String::from("inventory")],
             extract_preserve_context: false,
+            ..Default::default()
         };
         let r = process_file(&lines(src), CommentStyle::DoubleSlash, &filter, opts);
         assert_eq!(r.lines, vec!["base", "untagged", "inv_code", "tail"]);
@@ -588,6 +619,7 @@ base_bottom";
         let opts = ProcessOptions {
             tag_filter: &[],
             extract_preserve_context: true,
+            ..Default::default()
         };
         let r = process_file(&lines(src), CommentStyle::DoubleSlash, &filter, opts);
         assert_eq!(r.lines, vec!["base_top", "inside", "base_bottom"]);
@@ -638,6 +670,45 @@ base_bottom";
             ProcessOptions::default(),
         );
         assert_eq!(r.unclosed, vec![String::from("1.3 2.0")]);
+    }
+
+    #[test]
+    fn exc_block_excluded_in_every_mode() {
+        let src = "keep\n//version EXC\nsecret\n//version EXC\ntail";
+        // Excluded under cumulative, only, and a wide range alike.
+        assert_eq!(run(src, &["9.9"]), vec!["keep", "tail"]);
+        assert_eq!(run(src, &["1.0", "ONLY"]), vec!["keep", "tail"]);
+        assert_eq!(run(src, &["0.0", "9.9"]), vec!["keep", "tail"]);
+    }
+
+    #[test]
+    fn exc_wins_over_passing_inner_block() {
+        // Inner 1.0 would pass -v 1.0, but the EXC ancestor forces exclusion.
+        let src = "\
+a
+//version EXC
+//version 1.0 *
+inner
+//version 1.0 *
+//version EXC
+b";
+        assert_eq!(run(src, &["1.0"]), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn strip_comments_removes_whole_line_comments() {
+        let src = "// header comment\ncode1\n  // indented comment\ncode2\nlet u = \"http://x\"; // trailing kept";
+        let filter = parse_filter(&[String::from("1.0")]).unwrap();
+        let opts = ProcessOptions {
+            strip_comments: true,
+            ..Default::default()
+        };
+        let r = process_file(&lines(src), CommentStyle::DoubleSlash, &filter, opts);
+        // Whole-line comments gone; code (incl. line with trailing comment) untouched.
+        assert_eq!(
+            r.lines,
+            vec!["code1", "code2", "let u = \"http://x\"; // trailing kept"]
+        );
     }
 
     #[test]

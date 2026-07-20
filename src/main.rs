@@ -41,7 +41,7 @@ enum Command {
     /// Build a filtered output tree
     #[command(visible_alias = "b")]
     Build(BuildArgs),
-    /// Rebuild using the last build's settings (saved in vertion.toml)
+    /// Rebuild using the last build's settings (saved in vertion.cfg)
     #[command(visible_alias = "l")]
     Last(BuildArgs),
     /// Show version blocks in a file
@@ -102,9 +102,9 @@ enum Command {
         #[arg(long, short = 'j')]
         json: bool,
     },
-    /// Create a vertion.toml in the current directory
+    /// Create a vertion.cfg in the current directory
     Init,
-    /// Manage the persisted [[include]] entries in vertion.toml
+    /// Manage the persisted [[include]] entries in vertion.cfg
     Include(IncludeArgs),
 }
 
@@ -126,7 +126,7 @@ struct BuildArgs {
     /// Only include blocks matching this tag (repeatable, OR-logic)
     #[arg(long = "tag", short = 't')]
     tag: Vec<String>,
-    /// Use the named profile from vertion.toml
+    /// Use the named profile from vertion.cfg
     #[arg(long, short = 'p')]
     profile: Option<String>,
     /// Build to a timestamped folder (does not overwrite)
@@ -150,7 +150,10 @@ struct BuildArgs {
     /// Suppress the per-file progress bar (auto-suppressed when stderr is not a TTY)
     #[arg(long)]
     no_progress: bool,
-    /// Use the union of all `[[include]]` entries from vertion.toml as the filter
+    /// Strip whole-line comments from built output
+    #[arg(long = "no-comments", visible_alias = "noc")]
+    no_comments: bool,
+    /// Use the union of all `[[include]]` entries from vertion.cfg as the filter
     #[arg(long, short = 'i')]
     include: bool,
     /// Run shell command in the output folder after a successful build (repeatable, sequential)
@@ -250,7 +253,7 @@ fn resolve_filter(
                 let entries = cfg.include_entries().map_err(|e| e.to_string())?;
                 if entries.is_empty() {
                     return Err(
-                        "--include set but no [[include]] entries found in vertion.toml".into(),
+                        "--include set but no [[include]] entries found in vertion.cfg".into(),
                     );
                 }
                 return Ok(FilterMode::Include(entries));
@@ -264,13 +267,13 @@ fn resolve_filter(
         }
         BuildKind::Last => {
             if cfg.last.version.is_empty() && cfg.last.mode != "include" {
-                return Err("no previous build recorded in vertion.toml".into());
+                return Err("no previous build recorded in vertion.cfg".into());
             }
             if cfg.last.mode == "include" {
                 let entries = cfg.include_entries().map_err(|e| e.to_string())?;
                 if entries.is_empty() {
                     return Err(
-                        "last build used --include but no entries remain in vertion.toml".into(),
+                        "last build used --include but no entries remain in vertion.cfg".into(),
                     );
                 }
                 return Ok(FilterMode::Include(entries));
@@ -373,6 +376,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         build_input = wrap_dir;
     }
 
+    let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
     let opts = BuildOptions {
         input: &build_input,
         output_root: &output,
@@ -383,6 +387,8 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         preserve_context: false,
         strict: args.strict,
         show_progress: !args.no_progress,
+        no_comments: args.no_comments,
+        file_versions: &file_versions,
     };
 
     let build_outcome = build_project(opts);
@@ -446,7 +452,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         let next = autoincrement(base, increment);
         save_version(project_root, &next.to_string()).map_err(|e| e.to_string())?;
         println!(
-            "auto-increment: vertion.toml [project].version = {} ({})",
+            "auto-increment: vertion.cfg [project].version = {} ({})",
             next,
             increment.as_str()
         );
@@ -485,6 +491,7 @@ fn cmd_extract(
     let mut all_ignore = resolved.ignore.clone();
     all_ignore.extend(ignore);
 
+    let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
     let opts = BuildOptions {
         input: &input,
         output_root: &output,
@@ -495,6 +502,8 @@ fn cmd_extract(
         preserve_context,
         strict,
         show_progress: true,
+        no_comments: false,
+        file_versions: &file_versions,
     };
     let result = build_project(opts).map_err(|e| e.to_string())?;
     println!(
@@ -565,6 +574,7 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
     let mut ignore = resolved.ignore.clone();
     ignore.extend(args.ignore.iter().cloned());
 
+    let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
     let opts = BuildOptions {
         input: &input,
         output_root: &output,
@@ -575,8 +585,11 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
         preserve_context: false,
         strict: args.strict,
         show_progress: !args.no_progress,
+        no_comments: args.no_comments,
+        file_versions: &file_versions,
     };
-    watcher::watch_and_rebuild(opts).map_err(|e| e.to_string())
+    let run_commands = runner::resolve_run_commands(&args.run, &resolved.run);
+    watcher::watch_and_rebuild(opts, &run_commands).map_err(|e| e.to_string())
 }
 
 fn cmd_stats(input: &Path, ignore: &[PathBuf], json: bool) -> Result<(), String> {
