@@ -38,6 +38,12 @@ describe("detectMarker — Rust grammar parity", () => {
         expect(detectMarker("//version All", "//").kind).toBe("All");
     });
 
+    it("parses EXC markers", () => {
+        expect(detectMarker("//version EXC", "//").kind).toBe("Exclude");
+        expect(detectMarker("//version exc", "//").kind).toBe("Exclude");
+        expect(detectMarker("#version EXC", "#").kind).toBe("Exclude");
+    });
+
     it("inline range without star", () => {
         const k = detectMarker("//version 1.3 2.0", "//");
         expect(k.kind).toBe("InlineRange");
@@ -247,6 +253,36 @@ describe("pairLines — stack-pairing parity with parser.rs", () => {
         expect(r.pairs[0].kind).toBe("All");
         expect(r.pairs[0].openLine).toBe(1);
         expect(r.pairs[0].closeLine).toBe(3);
+    });
+
+    it("pairs EXC blocks", () => {
+        const src = lines("x\n//version EXC\nsecret\n//version EXC\ny");
+        const r = pairLines(src, "//");
+        expect(r.pairs).toHaveLength(1);
+        expect(r.pairs[0].kind).toBe("Exclude");
+        expect(r.pairs[0].openLine).toBe(1);
+        expect(r.pairs[0].closeLine).toBe(3);
+    });
+
+    it("pairs consecutive same-version sibling blocks independently", () => {
+        // Regression: several blocks with the same version in a row must each
+        // pair as its own sibling (not merge / mis-nest), so folding works.
+        const src = lines(
+            [
+                "//version 1.0 *",
+                "a",
+                "//version 1.0 *",
+                "//version 1.0 *",
+                "b",
+                "//version 1.0 *",
+            ].join("\n"),
+        );
+        const r = pairLines(src, "//");
+        expect(r.pairs.map((p) => [p.openLine, p.closeLine])).toEqual([
+            [0, 2],
+            [3, 5],
+        ]);
+        expect(r.unclosed).toHaveLength(0);
     });
 
     it("reports unclosed openers", () => {

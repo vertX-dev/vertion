@@ -37,18 +37,19 @@ async function wrapSelectionInBlock(): Promise<void> {
         return;
     }
     const version = await vscode.window.showInputBox({
-        prompt: "Version for the wrap block (or ALL)",
+        prompt: "Version for the wrap block (or ALL / EXC)",
         value: "1.0",
         validateInput: (v) => {
-            const t = v.trim();
+            const t = v.trim().toUpperCase();
             if (t.length === 0) return "Required";
-            if (t.toUpperCase() === "ALL") return null;
-            return isValidVersion(t) ? null : "Not a valid version";
+            if (t === "ALL" || t === "EXC") return null;
+            return isValidVersion(v.trim()) ? null : "Not a valid version";
         },
     });
     if (!version) return;
     const trimmedVersion = version.trim();
-    const isAll = trimmedVersion.toUpperCase() === "ALL";
+    const upper = trimmedVersion.toUpperCase();
+    const isKeyword = upper === "ALL" || upper === "EXC";
 
     const style = commentStyleFor(editor.document.languageId);
     const startLine = sel.start.line;
@@ -60,8 +61,8 @@ async function wrapSelectionInBlock(): Promise<void> {
             : sel.end.line;
     const indent =
         editor.document.lineAt(startLine).text.match(/^\s*/)?.[0] ?? "";
-    const markerBody = isAll
-        ? `${style}version ALL`
+    const markerBody = isKeyword
+        ? `${style}version ${upper}`
         : `${style}version ${trimmedVersion} *`;
     const openText = `${indent}${markerBody}`;
     const closeText = `${indent}${markerBody}`;

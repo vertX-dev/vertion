@@ -13,10 +13,11 @@ pub const DEFAULT_CONFIG_NAME: &str = "vertion.cfg";
 /// projects don't break on upgrade.
 pub const LEGACY_CONFIG_NAME: &str = "vertion.toml";
 
-/// Whole-file version assignment: a concrete version, or `EXC` (always exclude).
+/// Whole-file version assignment: a concrete version (with optional tags), or
+/// `EXC` (always exclude — tags are irrelevant).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileVersionSpec {
-    At(Version),
+    At { version: Version, tags: Vec<String> },
     Exclude,
 }
 
@@ -43,6 +44,10 @@ pub struct FileVersion {
     /// Path relative to the input directory (forward slashes; leading `./` optional).
     pub path: String,
     pub version: String,
+    /// Optional tags, filtered the same way as in-code block tags (`--tag`, OR-logic).
+    /// Ignored for `version = "EXC"`.
+    #[serde(default)]
+    pub tags: Vec<String>,
 }
 
 /// Normalize a path for matching: forward slashes, no leading `./`.
@@ -81,10 +86,20 @@ pub struct ProjectSection {
     pub ignore: Vec<PathBuf>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildSection {
     #[serde(default = "default_increment")]
     pub increment: String,
+}
+
+// Manual Default so a config omitting the entire `[build]` table still gets the
+// documented "minor" increment (a derived Default would leave it as "").
+impl Default for BuildSection {
+    fn default() -> Self {
+        BuildSection {
+            increment: default_increment(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -119,6 +134,9 @@ pub struct ProfileSection {
     pub increment: Option<String>,
     #[serde(default)]
     pub run: Vec<String>,
+    /// Default tag filter for builds using this profile (CLI `--tag` replaces it when given).
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Wrap mode: "temp" or "perm". `None` disables wrap.
     pub wrap: Option<String>,
     /// Wrap folder name. Defaults to `.vertion_wrap`.
@@ -167,6 +185,7 @@ impl VertionConfig {
         let mut ignore = self.project.ignore.clone();
         let mut increment = self.build.increment.clone();
         let mut run: Vec<String> = Vec::new();
+        let mut tags: Vec<String> = Vec::new();
         let mut wrap: Option<String> = None;
         let mut wrap_name: Option<String> = None;
 
@@ -193,6 +212,7 @@ impl VertionConfig {
                 increment = i.clone();
             }
             run = prof.run.clone();
+            tags = prof.tags.clone();
             wrap = prof.wrap.clone();
             wrap_name = prof.wrap_name.clone();
         }
@@ -210,6 +230,7 @@ impl VertionConfig {
             increment: IncrementLevel::parse(&increment).unwrap(),
             profile: name.map(|s| s.to_string()),
             run,
+            tags,
             wrap,
             wrap_name,
         })
@@ -228,9 +249,11 @@ impl VertionConfig {
                 let spec = if f.version.eq_ignore_ascii_case("EXC") {
                     FileVersionSpec::Exclude
                 } else {
-                    FileVersionSpec::At(
-                        parse_version(&f.version).map_err(|e| SettingsError(e.to_string()))?,
-                    )
+                    FileVersionSpec::At {
+                        version: parse_version(&f.version)
+                            .map_err(|e| SettingsError(e.to_string()))?,
+                        tags: f.tags.clone(),
+                    }
                 };
                 Ok((normalize_path_key(&f.path), spec))
             })
@@ -245,6 +268,7 @@ pub struct ResolvedSettings {
     pub increment: IncrementLevel,
     pub profile: Option<String>,
     pub run: Vec<String>,
+    pub tags: Vec<String>,
     pub wrap: Option<String>,
     pub wrap_name: Option<String>,
 }
@@ -419,6 +443,7 @@ mod tests {
                 ignore: vec![PathBuf::from("tests")],
                 increment: Some("minor".into()),
                 run: Vec::new(),
+                tags: Vec::new(),
                 wrap: None,
                 wrap_name: None,
             },

@@ -53,6 +53,7 @@ class RenameProvider implements vscode.RenameProvider {
         if (
             kind.kind !== "Versioned" &&
             kind.kind !== "All" &&
+            kind.kind !== "Exclude" &&
             kind.kind !== "InlineRange"
         ) {
             throw new Error("Not a Vertion marker token");
@@ -81,6 +82,7 @@ class RenameProvider implements vscode.RenameProvider {
         if (
             kind.kind !== "Versioned" &&
             kind.kind !== "All" &&
+            kind.kind !== "Exclude" &&
             kind.kind !== "InlineRange"
         ) {
             return undefined;
@@ -108,7 +110,8 @@ class RenameProvider implements vscode.RenameProvider {
             if (
                 partnerInfo &&
                 (partnerInfo.kind.kind === "Versioned" ||
-                    partnerInfo.kind.kind === "All")
+                    partnerInfo.kind.kind === "All" ||
+                    partnerInfo.kind.kind === "Exclude")
             ) {
                 const partnerSpan = findSpanForRole(
                     partnerInfo.kind.marker,
@@ -129,7 +132,8 @@ class RenameProvider implements vscode.RenameProvider {
             }
         } else if (
             kind.kind === "Versioned" ||
-            kind.kind === "All"
+            kind.kind === "All" ||
+            kind.kind === "Exclude"
         ) {
             // Block-style marker with no partner — warn that only one side was edited.
             vscode.window.showWarningMessage(

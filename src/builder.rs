@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 use crate::config::detect_comment_style;
-use crate::filter::FilterMode;
+use crate::filter::{tag_passes, FilterMode};
 use crate::parser::{process_file, ProcessOptions};
 use crate::settings::{normalize_path_key, FileVersionSpec};
 
@@ -103,10 +103,14 @@ pub fn build_project(opts: BuildOptions<'_>) -> Result<BuildResult, io::Error> {
         }
         let rel = path.strip_prefix(&input_abs).unwrap_or(path).to_path_buf();
         // Whole-file version gate: exclude files whose config-assigned version
-        // fails the filter (or is `EXC`). Passing files fall through and copy as-is.
+        // fails the filter/tags (or is `EXC`). Passing files fall through and copy as-is.
         match file_version_for(&rel, opts.file_versions) {
             Some(FileVersionSpec::Exclude) => continue,
-            Some(FileVersionSpec::At(v)) if !opts.filter.version_matches(v) => continue,
+            Some(FileVersionSpec::At { version, tags })
+                if !opts.filter.version_matches(version) || !tag_passes(tags, opts.tags) =>
+            {
+                continue
+            }
             _ => {}
         }
         let dest = output_abs.join(&rel);
@@ -375,11 +379,17 @@ mod tests {
         let file_versions = vec![
             (
                 "logo.png".to_string(),
-                FileVersionSpec::At(parse_version("2.0").unwrap()),
+                FileVersionSpec::At {
+                    version: parse_version("2.0").unwrap(),
+                    tags: vec![],
+                },
             ),
             (
                 "data.json".to_string(),
-                FileVersionSpec::At(parse_version("1.0").unwrap()),
+                FileVersionSpec::At {
+                    version: parse_version("1.0").unwrap(),
+                    tags: vec![],
+                },
             ),
         ];
         let opts = BuildOptions {
@@ -398,6 +408,51 @@ mod tests {
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("logo.png").exists());
         assert!(result.output.join("data.json").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_version_respects_tag_filter() {
+        let root = tmpdir("filetags");
+        let input = root.join("src");
+        let output = root.join("build");
+        write_file(&input.join("combat.png"), "x");
+        write_file(&input.join("shared.png"), "y");
+        let filter = parse_filter(&[String::from("2.0")]).unwrap();
+        let file_versions = vec![
+            (
+                "combat.png".to_string(),
+                FileVersionSpec::At {
+                    version: parse_version("1.0").unwrap(),
+                    tags: vec!["combat".to_string()],
+                },
+            ),
+            (
+                "shared.png".to_string(),
+                FileVersionSpec::At {
+                    version: parse_version("1.0").unwrap(),
+                    tags: vec![],
+                },
+            ),
+        ];
+        // Build with --tag inventory: the [combat] file is dropped, the untagged one kept.
+        let tags = vec!["inventory".to_string()];
+        let opts = BuildOptions {
+            input: &input,
+            output_root: &output,
+            filter: &filter,
+            ignore: &[],
+            tags: &tags,
+            dev: false,
+            preserve_context: false,
+            strict: false,
+            show_progress: false,
+            no_comments: false,
+            file_versions: &file_versions,
+        };
+        let result = build_project(opts).unwrap();
+        assert!(!result.output.join("combat.png").exists());
+        assert!(result.output.join("shared.png").exists());
         let _ = fs::remove_dir_all(&root);
     }
 

@@ -4,12 +4,12 @@ Editor support for [Vertion](https://github.com/vertX-dev/vertion) version marke
 
 ## Features
 
-- **Syntax highlighting** for marker lines (`//version 1.2 *`, `//version 1.3 2.0 *`, `//version 1.2 [tag] *`, `//version ALL`, and the `#` variants).
-- **Auto-close on Enter** — typing an opener like `//version 1.2 *` and pressing Enter inserts a matching close line beneath the cursor. ALL openers also auto-close. Inline range markers (no `*`) do not auto-close.
+- **Syntax highlighting** for marker lines (`//version 1.2 *`, `//version 1.3 2.0 *`, `//version 1.2 [tag] *`, `//version ALL`, `//version EXC`, and the `#` variants).
+- **Auto-close on Enter** — typing an opener like `//version 1.2 *` and pressing Enter inserts a matching close line beneath the cursor. `ALL` and `EXC` openers also auto-close. Inline range markers (no `*`) do not auto-close.
 - **Rename pair (F2)** — renaming the version, the upper bound, or a tag on one marker line updates its partner.
 - **Pair highlight** — placing the cursor on an open or close marker highlights both lines. Colors are configurable (see Settings below).
-- **Folding** — every paired block contributes a fold range.
-- **Snippets** — `verb`, `vera`, `vert`, `verrb`, `verr` for the five marker shapes (slash variant); same prefixes with `#` for hash-comment languages.
+- **Folding** — every paired block contributes a fold range that collapses through the close marker, so consecutive same-version blocks each fold cleanly.
+- **Snippets** — `verb`, `vera`, `vere`, `vert`, `verrb`, `verr` for the marker shapes (slash variant); same prefixes with `#` for hash-comment languages.
 - **Commands** — `Vertion: Jump to Matching Marker` and `Vertion: Wrap Selection in Version Block` (Command Palette + rebindable keys).
 
 ## Commands & keybindings
@@ -17,7 +17,7 @@ Editor support for [Vertion](https://github.com/vertX-dev/vertion) version marke
 | Command | Default keybinding | What it does |
 | --- | --- | --- |
 | `vertion.jumpToMatchingMarker` | `Ctrl+K Ctrl+M` (`Cmd+K Cmd+M` on macOS) | Move the cursor to the partner of the marker on the current line. |
-| `vertion.wrapSelectionInBlock` | `Ctrl+K Ctrl+V` (`Cmd+K Cmd+V` on macOS) | Prompt for a version (or `ALL`) and wrap the selection in open/close markers. |
+| `vertion.wrapSelectionInBlock` | `Ctrl+K Ctrl+V` (`Cmd+K Cmd+V` on macOS) | Prompt for a version (or `ALL` / `EXC`) and wrap the selection in open/close markers. |
 
 Rebind either via VSCode's keyboard shortcuts editor (`Ctrl+K Ctrl+S`) — search for "Vertion".
 

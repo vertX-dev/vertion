@@ -5,6 +5,8 @@
 
 A CLI tool that filters source files by version markers and writes a build tree containing only the code relevant to a chosen version (or range).
 
+> Full syntax reference (every marker form, every CLI flag, the complete `vertion.cfg` schema): [DOCS.md](DOCS.md).
+
 ## Install
 
 ### From source

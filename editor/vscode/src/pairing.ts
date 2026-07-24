@@ -13,7 +13,7 @@ import {
     MarkerKind,
 } from "./marker";
 
-export type PairKind = "Versioned" | "All";
+export type PairKind = "Versioned" | "All" | "Exclude";
 
 export interface PairedMarker {
     openLine: number;
@@ -47,6 +47,31 @@ interface StackEntry {
     line: number;
     marker: Marker;
     kind: PairKind;
+}
+
+/**
+ * Fold-range computation from paired markers. Pure (no vscode types) so it can
+ * be unit-tested.
+ *
+ * The fold spans from the open marker through the close marker inclusive
+ * (`end = closeLine`), matching how VSCode folds brace regions — collapsing a
+ * block hides its body AND its close marker, leaving only the open marker
+ * visible. Ending at `closeLine - 1` instead leaves a dangling close marker on
+ * screen, which is indistinguishable from the next block's open marker when
+ * several same-version blocks sit in a row.
+ *
+ * Empty blocks (open immediately followed by close) are skipped — there's
+ * nothing to collapse.
+ */
+export function foldRangesFromPairs(
+    pairs: Pick<PairedMarker, "openLine" | "closeLine">[],
+): { start: number; end: number }[] {
+    const ranges: { start: number; end: number }[] = [];
+    for (const p of pairs) {
+        if (p.closeLine <= p.openLine + 1) continue;
+        ranges.push({ start: p.openLine, end: p.closeLine });
+    }
+    return ranges;
 }
 
 export function pairLines(lines: string[], style: CommentStyle): PairingResult {
@@ -105,6 +130,30 @@ export function pairLines(lines: string[], style: CommentStyle): PairingResult {
                     if (openInfo) openInfo.partnerLine = i;
                 } else {
                     stack.push({ line: i, marker: m, kind: "All" });
+                }
+                break;
+            }
+            case "Exclude": {
+                const m = kind.marker;
+                const top = stack[stack.length - 1];
+                if (
+                    top &&
+                    top.kind === "Exclude" &&
+                    top.marker.version.toUpperCase() === "EXC"
+                ) {
+                    stack.pop();
+                    pairs.push({
+                        openLine: top.line,
+                        closeLine: i,
+                        openMarker: top.marker,
+                        closeMarker: m,
+                        kind: "Exclude",
+                    });
+                    partnerLine = top.line;
+                    const openInfo = byLine.get(top.line);
+                    if (openInfo) openInfo.partnerLine = i;
+                } else {
+                    stack.push({ line: i, marker: m, kind: "Exclude" });
                 }
                 break;
             }

@@ -9,6 +9,11 @@
     "body": ["//version ALL", "$0", "//version ALL"],
     "description": "Vertion ALL block (// comment)"
   },
+  "Vertion EXC": {
+    "prefix": "vere",
+    "body": ["//version EXC", "$0", "//version EXC"],
+    "description": "Vertion EXC block — always excluded (// comment)"
+  },
   "Vertion tagged block": {
     "prefix": "vert",
     "body": ["//version ${1:1.0} [${2:tag}] *", "$0", "//version $1 [$2] *"],

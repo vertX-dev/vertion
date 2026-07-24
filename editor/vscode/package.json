@@ -2,7 +2,7 @@
     "name": "vertion",
     "displayName": "Vertion",
     "description": "Syntax highlighting, auto-close, rename pair, folding, and snippets for Vertion version markers.",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "publisher": "vertx-dev",
     "license": "MIT",
     "engines": {

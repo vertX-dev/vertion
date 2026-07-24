@@ -16,7 +16,7 @@
       "patterns": [
         {
           "name": "constant.language.vertion",
-          "match": "(?i)\\bALL\\b"
+          "match": "(?i)\\b(?:ALL|EXC)\\b"
         },
         {
           "name": "constant.numeric.version.vertion",

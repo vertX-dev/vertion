@@ -27,7 +27,7 @@ export interface Marker {
     starSpan: MarkerSpan | null;
 }
 
-export type MarkerKind = { kind: 'Versioned'; marker: Marker } | { kind: 'All'; marker: Marker } | { kind: 'InlineRange'; marker: Marker } | { kind: 'Malformed'; reason: string } | { kind: 'None' };
+export type MarkerKind = { kind: 'Versioned'; marker: Marker } | { kind: 'All'; marker: Marker } | { kind: 'Exclude'; marker: Marker } | { kind: 'InlineRange'; marker: Marker } | { kind: 'Malformed'; reason: string } | { kind: 'None' };
 
 const KEYWORD = 'version';
 
@@ -39,7 +39,7 @@ const KEYWORD = 'version';
  *
  *   `version` <ws> <v1> [<ws> <v2>] [<ws> `[tag1,tag2,...]`] [<ws> `*`] <ws>*
  *
- * - `<v1>` is `ALL` (case-insensitive) or a parseable version.
+ * - `<v1>` is `ALL` / `EXC` (case-insensitive) or a parseable version.
  * - `<v2>` is an optional upper bound (only valid when `<v1>` is a version).
  *   - With `*`: range block (open/close paired by stack).
  *   - Without `*`: inline range (applies to the next line only).
@@ -85,14 +85,17 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
     };
     cursor = skipWhitespace(line, cursor);
 
-    const isAll = versionToken.toUpperCase() === 'ALL';
-    if (!isAll && !isValidVersion(versionToken)) {
+    const upper = versionToken.toUpperCase();
+    const isAll = upper === 'ALL';
+    const isExc = upper === 'EXC';
+    const isKeyword = isAll || isExc;
+    if (!isKeyword && !isValidVersion(versionToken)) {
         return malformed(`unparseable version \`${versionToken}\``);
     }
 
-    // 6. Optional second version token (`to`) — only for non-ALL.
+    // 6. Optional second version token (`to`) — only for a real version (not ALL/EXC).
     let toSpan: MarkerSpan | null = null;
-    if (!isAll && cursor < line.length && line.charAt(cursor) !== '[' && line.charAt(cursor) !== '*') {
+    if (!isKeyword && cursor < line.length && line.charAt(cursor) !== '[' && line.charAt(cursor) !== '*') {
         const nextStart = cursor;
         const nextEnd = findTokenEnd(line, cursor);
         const nextToken = line.slice(nextStart, nextEnd);
@@ -169,6 +172,9 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
     };
     if (isAll) {
         return { kind: 'All', marker };
+    }
+    if (isExc) {
+        return { kind: 'Exclude', marker };
     }
     if (marker.to !== null && !hasStar) {
         return { kind: 'InlineRange', marker };
@@ -308,7 +314,8 @@ function comparePreRelease(a: string, b: string): number {
 // pair when their (version, to) tuples are equal. ALL pairs on the literal
 // "ALL" (case-insensitive).
 
-export function markerPairKey(marker: Marker, kind: 'Versioned' | 'All'): string {
+export function markerPairKey(marker: Marker, kind: 'Versioned' | 'All' | 'Exclude'): string {
+    if (kind === 'Exclude') return 'EXC';
     if (kind === 'All') return 'ALL';
     return `V:${marker.version} ${marker.to ?? ''}`;
 }

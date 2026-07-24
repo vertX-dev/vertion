@@ -339,6 +339,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
     };
 
     let (tags, dev) = if matches!(kind, BuildKind::Last) {
+        // last.tags already reflects the profile tags that were in effect last time.
         let tags = if !args.tag.is_empty() {
             args.tag.clone()
         } else {
@@ -347,7 +348,13 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         let dev = args.dev || cfg.last.dev;
         (tags, dev)
     } else {
-        (args.tag.clone(), args.dev)
+        // CLI --tag replaces the profile's tags entirely; otherwise use the profile's.
+        let tags = if !args.tag.is_empty() {
+            args.tag.clone()
+        } else {
+            resolved.tags.clone()
+        };
+        (tags, args.dev)
     };
 
     // ---- Resolve wrap settings: CLI > profile > [last] (for `vertion last`) ----
@@ -491,13 +498,15 @@ fn cmd_extract(
     let mut all_ignore = resolved.ignore.clone();
     all_ignore.extend(ignore);
 
+    // CLI --tag replaces the profile's tags entirely; otherwise use the profile's.
+    let tags = if tag.is_empty() { resolved.tags.clone() } else { tag };
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
     let opts = BuildOptions {
         input: &input,
         output_root: &output,
         filter: &filter,
         ignore: &all_ignore,
-        tags: &tag,
+        tags: &tags,
         dev: false,
         preserve_context,
         strict,
@@ -574,13 +583,19 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
     let mut ignore = resolved.ignore.clone();
     ignore.extend(args.ignore.iter().cloned());
 
+    // CLI --tag replaces the profile's tags entirely; otherwise use the profile's.
+    let tags = if args.tag.is_empty() {
+        resolved.tags.clone()
+    } else {
+        args.tag.clone()
+    };
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
     let opts = BuildOptions {
         input: &input,
         output_root: &output,
         filter: &filter,
         ignore: &ignore,
-        tags: &args.tag,
+        tags: &tags,
         dev: args.dev,
         preserve_context: false,
         strict: args.strict,
