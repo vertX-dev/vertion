@@ -13,6 +13,8 @@ pub struct Block {
     /// True for inline range markers (`//version 1.3 2.0` with no `*`). Single-line entries.
     pub inline: bool,
     pub tags: Vec<String>,
+    /// Condition names attached to this block's tags.
+    pub conditions: Vec<String>,
     pub start_line: usize,
     pub end_line: usize,
     pub depth: usize,
@@ -34,10 +36,16 @@ pub fn collect_blocks(lines: &[String], style: CommentStyle) -> Vec<Block> {
     for (idx, line) in lines.iter().enumerate() {
         let line_no = idx + 1;
         match detect_marker(line, style) {
-            MarkerKind::Versioned(m) | MarkerKind::All(m) | MarkerKind::Exclude(m) => {
+            MarkerKind::Versioned(m)
+            | MarkerKind::All(m)
+            | MarkerKind::Exclude(m)
+            | MarkerKind::TagOnly(m) => {
+                // Tag-only markers pair on a synthetic `[tags]` label, so blocks
+                // with different tag sets stay distinct.
+                let label = m.pair_key();
                 let top_match = stack
                     .last()
-                    .map(|b| b.version == m.version && b.to == m.to)
+                    .map(|b| b.version == label && b.to == m.to)
                     .unwrap_or(false);
                 if top_match {
                     let mut closed = stack.pop().unwrap();
@@ -46,10 +54,11 @@ pub fn collect_blocks(lines: &[String], style: CommentStyle) -> Vec<Block> {
                 } else {
                     let depth = stack.len();
                     stack.push(Block {
-                        version: m.version,
+                        version: label,
                         to: m.to,
                         inline: false,
                         tags: m.tags,
+                        conditions: m.conditions,
                         start_line: line_no,
                         end_line: line_no,
                         depth,
@@ -65,6 +74,7 @@ pub fn collect_blocks(lines: &[String], style: CommentStyle) -> Vec<Block> {
                     to: m.to,
                     inline: true,
                     tags: m.tags,
+                    conditions: m.conditions,
                     start_line: line_no,
                     end_line: line_no,
                     depth,
@@ -118,11 +128,14 @@ pub fn render_show(blocks: &[Block], show_tags: bool, total_lines: usize) -> Str
 
 fn render_block(blk: &Block, show_tags: bool, out: &mut String) {
     let indent = "  ".repeat(blk.depth);
-    let tag_segment = if show_tags && !blk.tags.is_empty() {
+    let mut tag_segment = if show_tags && !blk.tags.is_empty() {
         format!(" tags: {}  ", blk.tags.join(", "))
     } else {
         String::new()
     };
+    if show_tags && !blk.conditions.is_empty() {
+        tag_segment.push_str(&format!(" if: {}  ", blk.conditions.join(", ")));
+    }
     if blk.inline {
         // Inline range: single-line entry.
         let to = blk.to.as_deref().unwrap_or("?");
@@ -134,6 +147,11 @@ fn render_block(blk: &Block, show_tags: bool, out: &mut String) {
     }
     let label = if blk.version.eq_ignore_ascii_case("ALL") {
         "[ALL]".to_string()
+    } else if blk.version.eq_ignore_ascii_case("EXC") {
+        "[EXC]".to_string()
+    } else if blk.version.starts_with('[') {
+        // Tag-only block: `version` already holds the synthetic `[tags]` label.
+        format!("[tags {}]", blk.version.trim_matches(['[', ']']))
     } else if let Some(to) = &blk.to {
         format!("[version {} → {}]", blk.version, to)
     } else {
@@ -183,11 +201,16 @@ fn format_graph_label(blk: &Block) -> String {
     } else {
         blk.version.clone()
     };
-    if blk.tags.is_empty() {
+    // Tag-only blocks already carry their tags in `version` (as `[a,b]`).
+    let mut out = if blk.tags.is_empty() || blk.version.starts_with('[') {
         base
     } else {
         format!("{} [{}]", base, blk.tags.join(","))
+    };
+    if !blk.conditions.is_empty() {
+        out.push_str(&format!(" if {}", blk.conditions.join(",")));
     }
+    out
 }
 
 #[cfg(test)]

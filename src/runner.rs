@@ -50,6 +50,22 @@ fn spawn_shell(command: &str, cwd: &Path) -> io::Result<std::process::ExitStatus
         .status()
 }
 
+/// Run a command purely for its exit status (0 → true). Output is captured and
+/// discarded so condition probes don't pollute build output.
+pub fn shell_test(command: &str, cwd: &Path) -> io::Result<bool> {
+    #[cfg(windows)]
+    let out = Command::new("cmd")
+        .args(["/C", command])
+        .current_dir(cwd)
+        .output()?;
+    #[cfg(not(windows))]
+    let out = Command::new("sh")
+        .args(["-c", command])
+        .current_dir(cwd)
+        .output()?;
+    Ok(out.status.success())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,13 +1,46 @@
 use crate::config::CommentStyle;
-use crate::filter::{parse_version, passes, passes_range_marker, FilterMode};
+use crate::filter::{parse_version, passes, passes_range_marker, tag_passes, FilterMode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
-    /// First token: a version string like "1.2" or the literal "ALL".
+    /// First token: a version string like "1.2", or the literal "ALL"/"EXC".
+    /// Empty for tag-only markers (`//version [wiki]`), which carry no version.
     pub version: String,
     /// Upper bound for range markers (`//version 1.3 2.0`). `None` for single-version markers.
     pub to: Option<String>,
     pub tags: Vec<String>,
+    /// Condition names attached to this marker's tags (`[stable{imagesInStable}]`).
+    /// All of them must resolve true for the marker to pass.
+    pub conditions: Vec<String>,
+}
+
+impl Marker {
+    /// True when this marker has no version token — selection is by tag alone.
+    pub fn is_tag_only(&self) -> bool {
+        self.version.is_empty()
+    }
+
+    /// Display label: `1.2`, `1.3 2.0` for ranges, or `[tags]` for tag-only.
+    pub fn label(&self) -> String {
+        if self.is_tag_only() {
+            return self.pair_key();
+        }
+        match &self.to {
+            Some(to) => format!("{} {}", self.version, to),
+            None => self.version.clone(),
+        }
+    }
+
+    /// Key that stands in for the version when pairing open/close markers.
+    /// Identical to `version` except for tag-only markers, which have none and
+    /// pair on their tag list instead. Callers track `to` separately.
+    pub fn pair_key(&self) -> String {
+        if self.is_tag_only() {
+            format!("[{}]", self.tags.join(","))
+        } else {
+            self.version.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +52,8 @@ pub enum MarkerKind {
     All(Marker),
     /// Explicit `EXC` marker — a block whose contents are always excluded.
     Exclude(Marker),
+    /// Tag-only marker (`//version [wiki]`) — no version, selection by tag alone.
+    TagOnly(Marker),
     /// Inline range marker (`//version 1.3 2.0` with no `*`) — affects only the next line.
     InlineRange(Marker),
     /// Malformed marker: looks like a marker but couldn't be parsed.
@@ -32,13 +67,16 @@ const KEYWORD: &str = "version";
 /// Parse a single line and return its marker classification.
 ///
 /// Marker grammar (after the comment prefix and optional whitespace):
-///   `version` <ws> <v1> [<ws> <v2>] [<ws> `[tag1,tag2,...]`] [<ws> `*`] <ws>*
+///   `version` <ws> [<v1> [<ws> <v2>]] [<ws> `[tag1,tag2{cond},...]`] [<ws> `*`] <ws>*
 ///
 /// Where:
-/// - `<v1>` is either `ALL` (case-insensitive) or a semver-ish version.
+/// - `<v1>` is `ALL` / `EXC` (case-insensitive) or a semver-ish version. It may be
+///   omitted entirely when a `[tag]` list follows — a tag-only marker.
 /// - `<v2>` is an optional upper bound for range markers (only valid when `<v1>` is a version).
 ///   - With `*`: range block (open/close paired by stack).
 ///   - Without `*`: inline range (applies to the next line only).
+/// - A tag may carry a condition in braces (`stable{imagesInStable}`); every
+///   condition on the marker must resolve true for it to pass.
 pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
     let trimmed = line.trim_start();
     let prefix = style.prefix();
@@ -52,7 +90,9 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
     // Require whitespace (or EOL) right after the keyword.
     match after_kw.chars().next() {
         None => {
-            return MarkerKind::Malformed("missing version or `ALL` after `version`".into());
+            return MarkerKind::Malformed(
+                "missing version, `ALL`/`EXC`, or `[tags]` after `version`".into(),
+            );
         }
         Some(c) if !c.is_whitespace() => return MarkerKind::None,
         _ => {}
@@ -60,26 +100,41 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
 
     let mut cursor = after_kw.trim_start();
     if cursor.is_empty() {
-        return MarkerKind::Malformed("missing version or `ALL` after `version`".into());
+        return MarkerKind::Malformed(
+            "missing version, `ALL`/`EXC`, or `[tags]` after `version`".into(),
+        );
     }
 
-    // First token: ALL or a version.
-    let token_end = cursor
-        .find(|c: char| c.is_whitespace() || c == '[')
-        .unwrap_or(cursor.len());
-    let token = &cursor[..token_end];
-    cursor = cursor[token_end..].trim_start();
+    // Tag-only marker: the version token is omitted and a `[tag]` list follows.
+    let tag_only = cursor.starts_with('[');
 
-    let is_all = token.eq_ignore_ascii_case("ALL");
-    let is_exc = token.eq_ignore_ascii_case("EXC");
+    // First token: ALL, EXC, or a version (absent for tag-only markers).
+    let mut token = "";
+    let mut is_all = false;
+    let mut is_exc = false;
+    if !tag_only {
+        let token_end = cursor
+            .find(|c: char| c.is_whitespace() || c == '[')
+            .unwrap_or(cursor.len());
+        token = &cursor[..token_end];
+        cursor = cursor[token_end..].trim_start();
+
+        is_all = token.eq_ignore_ascii_case("ALL");
+        is_exc = token.eq_ignore_ascii_case("EXC");
+        if !(is_all || is_exc) && parse_version(token).is_err() {
+            return MarkerKind::Malformed(format!("unparseable version `{}`", token));
+        }
+    }
     let is_keyword = is_all || is_exc;
-    if !is_keyword && parse_version(token).is_err() {
-        return MarkerKind::Malformed(format!("unparseable version `{}`", token));
-    }
 
     // Optional second version token (range marker upper bound). Only valid for a version.
     let mut to_token: Option<String> = None;
-    if !is_keyword && !cursor.is_empty() && !cursor.starts_with('[') && !cursor.starts_with('*') {
+    if !tag_only
+        && !is_keyword
+        && !cursor.is_empty()
+        && !cursor.starts_with('[')
+        && !cursor.starts_with('*')
+    {
         let next_end = cursor
             .find(|c: char| c.is_whitespace() || c == '[')
             .unwrap_or(cursor.len());
@@ -93,8 +148,9 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
         }
     }
 
-    // Optional [tags]
+    // Optional [tags], each optionally carrying a `{condition}`.
     let mut tags: Vec<String> = Vec::new();
+    let mut conditions: Vec<String> = Vec::new();
     if let Some(rest_after_bracket) = cursor.strip_prefix('[') {
         let Some(close) = rest_after_bracket.find(']') else {
             return MarkerKind::Malformed("unterminated `[` tag list".into());
@@ -105,7 +161,41 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
             if t.is_empty() {
                 return MarkerKind::Malformed("empty tag in list".into());
             }
-            tags.push(t.to_string());
+            match t.find('{') {
+                Some(open) => {
+                    if !t.ends_with('}') {
+                        return MarkerKind::Malformed(format!(
+                            "unterminated `{{` condition on tag `{}`",
+                            &t[..open]
+                        ));
+                    }
+                    let name = t[..open].trim();
+                    let cond = t[open + 1..t.len() - 1].trim();
+                    if name.is_empty() {
+                        return MarkerKind::Malformed("missing tag name before `{`".into());
+                    }
+                    if cond.is_empty() {
+                        return MarkerKind::Malformed(format!("empty condition on tag `{}`", name));
+                    }
+                    if cond.contains('{') || cond.contains('}') {
+                        return MarkerKind::Malformed(format!(
+                            "malformed condition on tag `{}`",
+                            name
+                        ));
+                    }
+                    tags.push(name.to_string());
+                    conditions.push(cond.to_string());
+                }
+                None => {
+                    if t.contains('}') {
+                        return MarkerKind::Malformed(format!(
+                            "stray `}}` in tag `{}` (conditions are written `tag{{name}}`)",
+                            t
+                        ));
+                    }
+                    tags.push(t.to_string());
+                }
+            }
         }
         cursor = rest_after_bracket[close + 1..].trim_start();
     }
@@ -137,8 +227,11 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
         version: token.to_string(),
         to: to_token,
         tags,
+        conditions,
     };
-    if is_all {
+    if tag_only {
+        MarkerKind::TagOnly(marker)
+    } else if is_all {
         MarkerKind::All(marker)
     } else if is_exc {
         MarkerKind::Exclude(marker)
@@ -156,6 +249,8 @@ pub struct ProcessResult {
     pub unclosed: Vec<String>,
     pub stripped: usize,
     pub malformed: Vec<(usize, String)>,
+    /// Markers referencing a condition name that isn't defined anywhere.
+    pub unknown_conditions: Vec<(usize, String)>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -164,6 +259,20 @@ pub struct ProcessOptions<'a> {
     pub extract_preserve_context: bool,
     /// Strip whole-line comments (non-marker) from included output.
     pub strip_comments: bool,
+    /// Resolved condition values, as `(name, value)` pairs. An unknown name
+    /// reads as false (and is reported via `unknown_conditions`).
+    pub conditions: &'a [(String, bool)],
+}
+
+fn condition_value(name: &str, conditions: &[(String, bool)]) -> Option<bool> {
+    conditions.iter().find(|(n, _)| n == name).map(|(_, v)| *v)
+}
+
+/// Every condition on the marker must resolve true. Unknown names read false.
+fn conditions_hold(m: &Marker, conditions: &[(String, bool)]) -> bool {
+    m.conditions
+        .iter()
+        .all(|c| condition_value(c, conditions).unwrap_or(false))
 }
 
 /// A whole-line comment: first non-whitespace char begins the comment prefix.
@@ -184,15 +293,26 @@ pub fn process_file(
     let mut had_markers = false;
     let mut stripped = 0usize;
     let mut malformed: Vec<(usize, String)> = Vec::new();
+    let mut unknown_conditions: Vec<(usize, String)> = Vec::new();
     let extract = matches!(filter, FilterMode::Extract(_));
     // Inline range pending: forces the next *content* line's inclusion to this value.
     let mut inline_pending: Option<bool> = None;
+
+    // Report each unresolvable condition once, on the marker line that names it.
+    let note_unknown = |idx: usize, m: &Marker, sink: &mut Vec<(usize, String)>| {
+        for c in &m.conditions {
+            if condition_value(c, opts.conditions).is_none() {
+                sink.push((idx + 1, c.clone()));
+            }
+        }
+    };
 
     for (idx, line) in lines.iter().enumerate() {
         match detect_marker(line, style) {
             MarkerKind::Versioned(m) => {
                 had_markers = true;
                 stripped += 1;
+                note_unknown(idx, &m, &mut unknown_conditions);
                 // Top-of-stack version+to match closes the block.
                 if stack
                     .last()
@@ -204,9 +324,26 @@ pub fn process_file(
                     stack.push(m);
                 }
             }
+            MarkerKind::TagOnly(m) => {
+                had_markers = true;
+                stripped += 1;
+                note_unknown(idx, &m, &mut unknown_conditions);
+                // Tag-only markers have no version to pair on, so they pair on
+                // an identical tag+condition list instead.
+                if stack
+                    .last()
+                    .map(|t| t.is_tag_only() && t.tags == m.tags && t.conditions == m.conditions)
+                    .unwrap_or(false)
+                {
+                    stack.pop();
+                } else {
+                    stack.push(m);
+                }
+            }
             MarkerKind::All(m) => {
                 had_markers = true;
                 stripped += 1;
+                note_unknown(idx, &m, &mut unknown_conditions);
                 if stack
                     .last()
                     .map(|t| t.version.eq_ignore_ascii_case("ALL"))
@@ -220,6 +357,7 @@ pub fn process_file(
             MarkerKind::Exclude(m) => {
                 had_markers = true;
                 stripped += 1;
+                note_unknown(idx, &m, &mut unknown_conditions);
                 if stack
                     .last()
                     .map(|t| t.version.eq_ignore_ascii_case("EXC"))
@@ -233,17 +371,19 @@ pub fn process_file(
             MarkerKind::InlineRange(m) => {
                 had_markers = true;
                 stripped += 1;
+                note_unknown(idx, &m, &mut unknown_conditions);
                 // Combined: all ancestors pass AND this range marker passes.
                 let ancestors_pass = stack
                     .iter()
-                    .all(|a| marker_passes_filter(a, filter, opts.tag_filter, extract));
-                let self_pass = passes_range_marker(
-                    &m.version,
-                    m.to.as_deref().unwrap_or(""),
-                    &m.tags,
-                    filter,
-                    opts.tag_filter,
-                );
+                    .all(|a| marker_passes_filter(a, filter, opts, extract));
+                let self_pass = conditions_hold(&m, opts.conditions)
+                    && passes_range_marker(
+                        &m.version,
+                        m.to.as_deref().unwrap_or(""),
+                        &m.tags,
+                        filter,
+                        opts.tag_filter,
+                    );
                 // In Extract mode the inline range doesn't preserve base — only context preserves.
                 let final_pass = if extract {
                     if !opts.extract_preserve_context {
@@ -280,44 +420,47 @@ pub fn process_file(
         }
     }
 
-    let unclosed = stack
-        .into_iter()
-        .map(|m| match m.to {
-            Some(t) => format!("{} {}", m.version, t),
-            None => m.version,
-        })
-        .collect();
+    let unclosed = stack.into_iter().map(|m| m.label()).collect();
     ProcessResult {
         lines: out,
         had_markers,
         unclosed,
         stripped,
         malformed,
+        unknown_conditions,
     }
 }
 
 /// Whether a marker on the ancestor stack passes the active filter.
-/// Handles plain versioned, ALL, and range-block markers uniformly.
+/// Handles plain versioned, ALL, tag-only, and range-block markers uniformly.
 fn marker_passes_filter(
     m: &Marker,
     filter: &FilterMode,
-    tag_filter: &[String],
+    opts: ProcessOptions<'_>,
     extract: bool,
 ) -> bool {
     if extract {
         // In extract mode the ancestor rule is evaluated separately by decide_inclusion;
         // this helper is only used for inline range eval, where extract is handled
         // by the caller. Default to ancestor passing for non-extract code paths.
-        return passes_marker_general(m, filter, tag_filter);
+        return passes_marker_general(m, filter, opts);
     }
-    passes_marker_general(m, filter, tag_filter)
+    passes_marker_general(m, filter, opts)
 }
 
-fn passes_marker_general(m: &Marker, filter: &FilterMode, tag_filter: &[String]) -> bool {
+fn passes_marker_general(m: &Marker, filter: &FilterMode, opts: ProcessOptions<'_>) -> bool {
+    // A failing condition vetoes the marker regardless of version/tags.
+    if !conditions_hold(m, opts.conditions) {
+        return false;
+    }
+    if m.is_tag_only() {
+        // No version gate — selection is by tag alone.
+        return tag_passes(&m.tags, opts.tag_filter);
+    }
     if let Some(to) = &m.to {
-        passes_range_marker(&m.version, to, &m.tags, filter, tag_filter)
+        passes_range_marker(&m.version, to, &m.tags, filter, opts.tag_filter)
     } else {
-        passes(&m.version, &m.tags, filter, tag_filter)
+        passes(&m.version, &m.tags, filter, opts.tag_filter)
     }
 }
 
@@ -335,26 +478,29 @@ fn decide_inclusion(
             true
         };
     }
+    // A failing condition anywhere in the chain vetoes the line in every mode.
+    if !stack.iter().all(|m| conditions_hold(m, opts.conditions)) {
+        return false;
+    }
     if extract {
         // Extract mode: any non-ALL, non-range ancestor matching the target version wins.
         let any_match = stack.iter().any(|m| {
-            !m.version.eq_ignore_ascii_case("ALL")
+            !m.is_tag_only()
+                && !m.version.eq_ignore_ascii_case("ALL")
                 && m.to.is_none()
                 && passes(&m.version, &m.tags, filter, opts.tag_filter)
         });
         if any_match {
             return true;
         }
-        // ALL-only (or range-only) ancestor chain → only preserve_context emits.
+        // ALL-only (or range-/tag-only) ancestor chain → only preserve_context emits.
         let only_passthrough = stack
             .iter()
-            .all(|m| m.version.eq_ignore_ascii_case("ALL") || m.to.is_some());
+            .all(|m| m.version.eq_ignore_ascii_case("ALL") || m.to.is_some() || m.is_tag_only());
         return only_passthrough && opts.extract_preserve_context;
     }
     // Cumulative / Range / Only / Include: every ancestor must independently pass.
-    stack
-        .iter()
-        .all(|m| passes_marker_general(m, filter, opts.tag_filter))
+    stack.iter().all(|m| passes_marker_general(m, filter, opts))
 }
 
 #[cfg(test)]
@@ -386,7 +532,8 @@ mod tests {
             MarkerKind::Versioned(Marker {
                 version: "1.2".into(),
                 to: None,
-                tags: vec![]
+                tags: vec![],
+                conditions: vec![],
             })
         );
     }
@@ -399,7 +546,8 @@ mod tests {
             MarkerKind::Versioned(Marker {
                 version: "1.2".into(),
                 to: None,
-                tags: vec![]
+                tags: vec![],
+                conditions: vec![],
             })
         );
     }
@@ -415,7 +563,8 @@ mod tests {
             MarkerKind::Versioned(Marker {
                 version: "1.2".into(),
                 to: None,
-                tags: vec!["inventory".into(), "combat".into()]
+                tags: vec!["inventory".into(), "combat".into()],
+                conditions: vec![],
             })
         );
     }
@@ -435,6 +584,7 @@ mod tests {
                 version: "1.3".into(),
                 to: Some("2.0".into()),
                 tags: vec![],
+                conditions: vec![],
             })
         );
     }
@@ -448,6 +598,7 @@ mod tests {
                 version: "1.3".into(),
                 to: Some("2.0".into()),
                 tags: vec![],
+                conditions: vec![],
             })
         );
     }
@@ -464,6 +615,7 @@ mod tests {
                 version: "1.3".into(),
                 to: Some("2.0".into()),
                 tags: vec!["inventory".into(), "beta".into()],
+                conditions: vec![],
             })
         );
     }
@@ -709,6 +861,180 @@ b";
             r.lines,
             vec!["code1", "code2", "let u = \"http://x\"; // trailing kept"]
         );
+    }
+
+    #[test]
+    fn detect_tag_only_marker() {
+        let m = detect_marker("//version [wiki]", CommentStyle::DoubleSlash);
+        assert_eq!(
+            m,
+            MarkerKind::TagOnly(Marker {
+                version: String::new(),
+                to: None,
+                tags: vec!["wiki".into()],
+                conditions: vec![],
+            })
+        );
+        // `*` is allowed but optional on tag-only markers.
+        assert!(matches!(
+            detect_marker("#version [wiki] *", CommentStyle::Hash),
+            MarkerKind::TagOnly(_)
+        ));
+    }
+
+    #[test]
+    fn detect_tag_condition() {
+        let m = detect_marker(
+            "//version [stable{imagesInStable}]",
+            CommentStyle::DoubleSlash,
+        );
+        assert_eq!(
+            m,
+            MarkerKind::TagOnly(Marker {
+                version: String::new(),
+                to: None,
+                tags: vec!["stable".into()],
+                conditions: vec!["imagesInStable".into()],
+            })
+        );
+        // Conditions also work alongside a version.
+        let v = detect_marker("//version 1.2 [a{c1},b] *", CommentStyle::DoubleSlash);
+        match v {
+            MarkerKind::Versioned(m) => {
+                assert_eq!(m.tags, vec!["a".to_string(), "b".to_string()]);
+                assert_eq!(m.conditions, vec!["c1".to_string()]);
+            }
+            other => panic!("expected Versioned, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn malformed_condition_syntax() {
+        for line in [
+            "//version [stable{oops]",
+            "//version [{noname}]",
+            "//version [stable{}]",
+            "//version [stable}]",
+        ] {
+            assert!(
+                matches!(
+                    detect_marker(line, CommentStyle::DoubleSlash),
+                    MarkerKind::Malformed(_)
+                ),
+                "expected malformed for `{}`",
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn tag_only_block_included_by_default_filtered_by_tag() {
+        let src = "base\n//version [wiki]\nwiki_body\n//version [wiki]\ntail";
+        // No --tag → included (empty tag filter passes everything).
+        assert_eq!(run(src, &["1.0"]), vec!["base", "wiki_body", "tail"]);
+
+        // --tag wiki → included.
+        let filter = parse_filter(&[String::from("1.0")]).unwrap();
+        let opts = ProcessOptions {
+            tag_filter: &[String::from("wiki")],
+            ..Default::default()
+        };
+        let r = process_file(&lines(src), CommentStyle::DoubleSlash, &filter, opts);
+        assert_eq!(r.lines, vec!["base", "wiki_body", "tail"]);
+
+        // --tag other → the wiki block is dropped.
+        let opts2 = ProcessOptions {
+            tag_filter: &[String::from("other")],
+            ..Default::default()
+        };
+        let r2 = process_file(&lines(src), CommentStyle::DoubleSlash, &filter, opts2);
+        assert_eq!(r2.lines, vec!["base", "tail"]);
+    }
+
+    #[test]
+    fn tag_only_blocks_pair_by_tag_list() {
+        // Two adjacent tag-only blocks with different tags must not cross-pair.
+        let src = "\
+//version [a]
+in_a
+//version [a]
+//version [b]
+in_b
+//version [b]";
+        let r = process_file(
+            &lines(src),
+            CommentStyle::DoubleSlash,
+            &parse_filter(&[String::from("1.0")]).unwrap(),
+            ProcessOptions::default(),
+        );
+        assert!(r.unclosed.is_empty());
+        assert_eq!(r.lines, vec!["in_a", "in_b"]);
+    }
+
+    #[test]
+    fn condition_gates_block() {
+        let src = "base\n//version [stable{imagesInStable}]\nimg\n//version [stable{imagesInStable}]\ntail";
+        let filter = parse_filter(&[String::from("1.0")]).unwrap();
+
+        let on = [("imagesInStable".to_string(), true)];
+        let r = process_file(
+            &lines(src),
+            CommentStyle::DoubleSlash,
+            &filter,
+            ProcessOptions {
+                conditions: &on,
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.lines, vec!["base", "img", "tail"]);
+
+        let off = [("imagesInStable".to_string(), false)];
+        let r2 = process_file(
+            &lines(src),
+            CommentStyle::DoubleSlash,
+            &filter,
+            ProcessOptions {
+                conditions: &off,
+                ..Default::default()
+            },
+        );
+        assert_eq!(r2.lines, vec!["base", "tail"]);
+    }
+
+    #[test]
+    fn condition_gates_versioned_block_and_unknown_reads_false() {
+        let src = "base\n//version 1.0 [x{nope}] *\nbody\n//version 1.0 *\ntail";
+        let filter = parse_filter(&[String::from("1.0")]).unwrap();
+        let r = process_file(
+            &lines(src),
+            CommentStyle::DoubleSlash,
+            &filter,
+            ProcessOptions::default(),
+        );
+        // Unknown condition → false → block excluded, and reported once.
+        assert_eq!(r.lines, vec!["base", "tail"]);
+        assert_eq!(r.unknown_conditions, vec![(2, "nope".to_string())]);
+    }
+
+    #[test]
+    fn failing_condition_on_ancestor_vetoes_children() {
+        let src = "\
+//version [outer{off}]
+//version 1.0 *
+inner
+//version 1.0 *
+//version [outer{off}]";
+        let off = [("off".to_string(), false)];
+        let r = process_file(
+            &lines(src),
+            CommentStyle::DoubleSlash,
+            &parse_filter(&[String::from("1.0")]).unwrap(),
+            ProcessOptions {
+                conditions: &off,
+                ..Default::default()
+            },
+        );
+        assert!(r.lines.is_empty());
     }
 
     #[test]

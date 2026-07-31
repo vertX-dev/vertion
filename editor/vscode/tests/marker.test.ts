@@ -44,6 +44,58 @@ describe("detectMarker — Rust grammar parity", () => {
         expect(detectMarker("#version EXC", "#").kind).toBe("Exclude");
     });
 
+    it("parses tag-only markers", () => {
+        const k = detectMarker("//version [wiki]", "//");
+        expect(k.kind).toBe("TagOnly");
+        if (k.kind !== "TagOnly") return;
+        expect(k.marker.version).toBe("");
+        expect(k.marker.tags).toEqual(["wiki"]);
+        expect(k.marker.conditions).toEqual([]);
+        // `*` is allowed but optional.
+        expect(detectMarker("#version [wiki] *", "#").kind).toBe("TagOnly");
+    });
+
+    it("parses tag conditions", () => {
+        const k = detectMarker("//version [stable{imagesInStable}]", "//");
+        expect(k.kind).toBe("TagOnly");
+        if (k.kind !== "TagOnly") return;
+        expect(k.marker.tags).toEqual(["stable"]);
+        expect(k.marker.conditions).toEqual(["imagesInStable"]);
+    });
+
+    it("parses conditions alongside a version", () => {
+        const k = detectMarker("//version 1.2 [a{c1},b] *", "//");
+        expect(k.kind).toBe("Versioned");
+        if (k.kind !== "Versioned") return;
+        expect(k.marker.tags).toEqual(["a", "b"]);
+        expect(k.marker.conditions).toEqual(["c1"]);
+    });
+
+    it("captures condition spans correctly", () => {
+        const text = "//version [stable{imagesInStable}]";
+        const k = detectMarker(text, "//");
+        if (k.kind !== "TagOnly") {
+            expect.fail("expected TagOnly");
+            return;
+        }
+        expect(k.marker.conditionSpans).toHaveLength(1);
+        const c = k.marker.conditionSpans[0];
+        expect(text.slice(c.start, c.end)).toBe("imagesInStable");
+        const t = k.marker.tagSpans[0];
+        expect(text.slice(t.start, t.end)).toBe("stable");
+    });
+
+    it("malformed condition syntax", () => {
+        for (const line of [
+            "//version [stable{oops]",
+            "//version [{noname}]",
+            "//version [stable{}]",
+            "//version [stable}]",
+        ]) {
+            expect(detectMarker(line, "//").kind, line).toBe("Malformed");
+        }
+    });
+
     it("inline range without star", () => {
         const k = detectMarker("//version 1.3 2.0", "//");
         expect(k.kind).toBe("InlineRange");
@@ -262,6 +314,33 @@ describe("pairLines — stack-pairing parity with parser.rs", () => {
         expect(r.pairs[0].kind).toBe("Exclude");
         expect(r.pairs[0].openLine).toBe(1);
         expect(r.pairs[0].closeLine).toBe(3);
+    });
+
+    it("pairs tag-only blocks by their tag list", () => {
+        const src = lines(
+            [
+                "//version [a]",
+                "in_a",
+                "//version [a]",
+                "//version [b]",
+                "in_b",
+                "//version [b]",
+            ].join("\n"),
+        );
+        const r = pairLines(src, "//");
+        expect(r.pairs.map((p) => [p.openLine, p.closeLine])).toEqual([
+            [0, 2],
+            [3, 5],
+        ]);
+        expect(r.pairs[0].kind).toBe("TagOnly");
+        expect(r.unclosed).toHaveLength(0);
+    });
+
+    it("does NOT pair tag-only blocks with differing conditions", () => {
+        const src = lines("//version [a{c1}]\nin\n//version [a{c2}]");
+        const r = pairLines(src, "//");
+        expect(r.pairs).toHaveLength(0);
+        expect(r.unclosed).toHaveLength(2);
     });
 
     it("pairs consecutive same-version sibling blocks independently", () => {

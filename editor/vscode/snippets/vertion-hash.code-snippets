@@ -14,6 +14,16 @@
     "body": ["#version EXC", "$0", "#version EXC"],
     "description": "Vertion EXC block — always excluded (# comment)"
   },
+  "Vertion tag-only block": {
+    "prefix": "vertt",
+    "body": ["#version [${1:tag}]", "$0", "#version [$1]"],
+    "description": "Vertion tag-only block — no version, selected by tag (# comment)"
+  },
+  "Vertion conditional tag block": {
+    "prefix": "vertc",
+    "body": ["#version [${1:tag}{${2:condition}}]", "$0", "#version [$1{$2}]"],
+    "description": "Vertion tag-only block gated by a condition (# comment)"
+  },
   "Vertion tagged block": {
     "prefix": "vert",
     "body": ["#version ${1:1.0} [${2:tag}] *", "$0", "#version $1 [$2] *"],

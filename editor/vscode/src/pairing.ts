@@ -13,7 +13,7 @@ import {
     MarkerKind,
 } from "./marker";
 
-export type PairKind = "Versioned" | "All" | "Exclude";
+export type PairKind = "Versioned" | "All" | "Exclude" | "TagOnly";
 
 export interface PairedMarker {
     openLine: number;
@@ -130,6 +130,32 @@ export function pairLines(lines: string[], style: CommentStyle): PairingResult {
                     if (openInfo) openInfo.partnerLine = i;
                 } else {
                     stack.push({ line: i, marker: m, kind: "All" });
+                }
+                break;
+            }
+            case "TagOnly": {
+                const m = kind.marker;
+                const top = stack[stack.length - 1];
+                // No version to pair on — match an identical tag+condition list.
+                if (
+                    top &&
+                    top.kind === "TagOnly" &&
+                    top.marker.tags.join(",") === m.tags.join(",") &&
+                    top.marker.conditions.join(",") === m.conditions.join(",")
+                ) {
+                    stack.pop();
+                    pairs.push({
+                        openLine: top.line,
+                        closeLine: i,
+                        openMarker: top.marker,
+                        closeMarker: m,
+                        kind: "TagOnly",
+                    });
+                    partnerLine = top.line;
+                    const openInfo = byLine.get(top.line);
+                    if (openInfo) openInfo.partnerLine = i;
+                } else {
+                    stack.push({ line: i, marker: m, kind: "TagOnly" });
                 }
                 break;
             }

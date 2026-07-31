@@ -44,6 +44,14 @@ vertion stats                                # marker stats
 vertion watch -v 1.2                         # rebuild on file change
 vertion last                                 # rebuild with previous settings
 
+# Conditions gating `[tag{cond}]` markers (project cfg, or -G for the global one)
+vertion condition --add imagesInStable --bool false
+vertion condition --add hasAssets --cmd "test -d assets/img"   # a hook
+vertion condition --add apiReleased --global-ref apiReleased   # wait on a shared switch
+vertion condition --set imagesInStable --bool true
+vertion condition --list                     # all conditions + resolved values
+vertion condition --hooks                    # only the command-backed ones
+
 # Persisted include list (non-contiguous version sets)
 vertion include 1.1                          # add exact version
 vertion include 1.5 + 3                      # add range 1.5 → 1.8
@@ -87,6 +95,14 @@ Run `vertion --help` (or `vertion <subcommand> --help`) for the full flag list �
   ...code...
 //version EXC
 
+//version [wiki]                      // tag-only: no version, selected by tag alone
+  ...code...
+//version [wiki]
+
+//version [stable{imagesInStable}]    // tag gated by a named condition
+  ...code...
+//version [stable{imagesInStable}]
+
 //version 1.3 2.0 *                   // range block: from <= build_upper < to
   ...code...
 //version 1.3 2.0 *
@@ -100,6 +116,8 @@ doSomethingFun();
 - Range marker condition: `from <= build_upper < to` (lower inclusive, upper exclusive). Range markers are skipped entirely in `ONLY` mode.
 - Nesting rule: every block in the chain must independently pass the filter.
 - `ALL` blocks are always kept; `EXC` blocks are always dropped (an `EXC` ancestor excludes everything inside it, regardless of filter).
+- Tag-only markers drop the version entirely — the tag is the selector. They're included by default and filtered with `--tag`; they pair by tag list, so `[a]` never closes `[b]`.
+- A tag may carry a `{condition}` defined in `[conditions.*]`; every condition on a marker must resolve true, in every filter mode. Manage them with `vertion condition` (see below).
 - `--no-comments` (`--noc`) strips whole-line comments from the built output. Trailing/inline comments and `//` inside strings are left alone.
 
 ## Config (`vertion.cfg`)
@@ -148,6 +166,17 @@ version = "1.0"
 [[files]]
 path = "assets/wip.psd"
 version = "EXC"          # always excluded, like an EXC block
+
+# Named conditions for `[tag{name}]` markers. Precedence: cmd > global > bool.
+[conditions.imagesInStable]
+bool = false             # manual project switch
+
+[conditions.apiReleased]
+global = "apiReleased"   # defer to ~/.vertion/vertion.cfg; false until defined there
+bool   = false
+
+[conditions.hasAssets]
+cmd = "test -d assets/img"   # exit 0 = true, re-evaluated each build
 ```
 
 Use a profile with `--profile prod`. `--auto` increments `[project].version` after a successful build (illegal with `ONLY`, `--include`, or `--last ONLY`).

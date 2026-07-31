@@ -55,7 +55,8 @@ function updateHighlights(editor: vscode.TextEditor): void {
         info.partnerLine === null ||
         (info.kind.kind !== "Versioned" &&
             info.kind.kind !== "All" &&
-            info.kind.kind !== "Exclude")
+            info.kind.kind !== "Exclude" &&
+            info.kind.kind !== "TagOnly")
     ) {
         clearHighlights(editor);
         return;

@@ -37,8 +37,24 @@
               "match": ","
             },
             {
+              "begin": "\\{",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.vertion" }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.vertion" }
+              },
+              "patterns": [
+                {
+                  "name": "entity.name.function.vertion",
+                  "match": "[^}]+"
+                }
+              ]
+            },
+            {
               "name": "entity.name.tag.vertion",
-              "match": "[^,\\]]+"
+              "match": "[^,{}\\]]+"
             }
           ]
         },

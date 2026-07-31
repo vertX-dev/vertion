@@ -1,4 +1,5 @@
 mod builder;
+mod conditions;
 mod config;
 mod filter;
 mod inspect;
@@ -106,6 +107,9 @@ enum Command {
     Init,
     /// Manage the persisted [[include]] entries in vertion.cfg
     Include(IncludeArgs),
+    /// Manage the named [conditions.*] used by `{cond}` marker tags
+    #[command(visible_alias = "c")]
+    Condition(ConditionArgs),
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -175,6 +179,37 @@ struct BuildArgs {
 }
 
 #[derive(clap::Args, Debug, Clone)]
+struct ConditionArgs {
+    /// List every condition with its resolved value and source (the default action)
+    #[arg(long, short = 'l')]
+    list: bool,
+    /// List only command-backed conditions (hooks), with their commands
+    #[arg(long)]
+    hooks: bool,
+    /// Create a new condition with this name
+    #[arg(long, short = 'a', value_name = "NAME")]
+    add: Option<String>,
+    /// Update the existing condition with this name
+    #[arg(long, short = 's', value_name = "NAME")]
+    set: Option<String>,
+    /// Remove the condition with this name
+    #[arg(long, value_name = "NAME")]
+    remove: Option<String>,
+    /// Source: literal value
+    #[arg(long = "bool", value_name = "TRUE|FALSE")]
+    bool_value: Option<bool>,
+    /// Source: shell command, exit status 0 means true
+    #[arg(long, value_name = "COMMAND")]
+    cmd: Option<String>,
+    /// Source: defer to this condition in the global config
+    #[arg(long = "global-ref", value_name = "NAME")]
+    global_ref: Option<String>,
+    /// Read/write the user-level global config instead of the project one
+    #[arg(long = "global-file", short = 'G')]
+    global_file: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
 struct IncludeArgs {
     /// `<version>` to add, optionally followed by `+ <offset>` for a forward range.
     /// e.g. `include 1.2`, `include 1.2 + 4`. Omit to use `--show` or `--remove`.
@@ -237,6 +272,7 @@ fn run() -> Result<(), String> {
         } => cmd_stats(&input, &ignore, json),
         Command::Init => cmd_init(),
         Command::Include(args) => cmd_include(args),
+        Command::Condition(args) => cmd_condition(args),
     }
 }
 
@@ -387,6 +423,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
     }
 
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
+    let condition_pairs = resolve_condition_pairs(&cfg, project_root)?;
     let opts = BuildOptions {
         input: &build_input,
         output_root: &output,
@@ -399,6 +436,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         show_progress: !args.no_progress,
         no_comments: args.no_comments,
         file_versions: &file_versions,
+        conditions: &condition_pairs,
     };
 
     let build_outcome = build_project(opts);
@@ -507,8 +545,13 @@ fn cmd_extract(
     all_ignore.extend(ignore);
 
     // CLI --tag replaces the profile's tags entirely; otherwise use the profile's.
-    let tags = if tag.is_empty() { resolved.tags.clone() } else { tag };
+    let tags = if tag.is_empty() {
+        resolved.tags.clone()
+    } else {
+        tag
+    };
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
+    let condition_pairs = resolve_condition_pairs(&cfg, project_root)?;
     let opts = BuildOptions {
         input: &input,
         output_root: &output,
@@ -521,6 +564,7 @@ fn cmd_extract(
         show_progress: true,
         no_comments: false,
         file_versions: &file_versions,
+        conditions: &condition_pairs,
     };
     let result = build_project(opts).map_err(|e| e.to_string())?;
     println!(
@@ -598,6 +642,7 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
         args.tag.clone()
     };
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
+    let condition_pairs = resolve_condition_pairs(&cfg, project_root)?;
     let opts = BuildOptions {
         input: &input,
         output_root: &output,
@@ -610,6 +655,7 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
         show_progress: !args.no_progress,
         no_comments: args.no_comments,
         file_versions: &file_versions,
+        conditions: &condition_pairs,
     };
     let run_commands = runner::resolve_run_commands(&args.run, &resolved.run);
     watcher::watch_and_rebuild(opts, &run_commands, args.run_here).map_err(|e| e.to_string())
@@ -695,6 +741,155 @@ fn cmd_include(args: IncludeArgs) -> Result<(), String> {
         println!("Added include entry {} → {}", entry.from, entry.to);
     }
     Ok(())
+}
+
+fn cmd_condition(args: ConditionArgs) -> Result<(), String> {
+    let project_root = Path::new(".");
+
+    // Build the requested source from --bool / --cmd / --global-ref.
+    let source = |a: &ConditionArgs| -> Result<settings::ConditionDef, String> {
+        let n = [
+            a.bool_value.is_some(),
+            a.cmd.is_some(),
+            a.global_ref.is_some(),
+        ]
+        .iter()
+        .filter(|x| **x)
+        .count();
+        if n > 1 {
+            return Err("give at most one of --bool, --cmd, --global-ref".into());
+        }
+        Ok(settings::ConditionDef {
+            global: a.global_ref.clone(),
+            bool: a.bool_value,
+            cmd: a.cmd.clone(),
+        })
+    };
+
+    // ---- mutations ----
+    if let Some(name) = args.add.clone().or(args.set.clone()) {
+        let adding = args.add.is_some();
+        if args.add.is_some() && args.set.is_some() {
+            return Err("--add and --set are mutually exclusive".into());
+        }
+        let mut def = source(&args)?;
+        if adding && def == settings::ConditionDef::default() {
+            // `--add NAME` with no source is a plain false flag.
+            def.bool = Some(false);
+        }
+
+        if args.global_file {
+            let mut g = settings::load_global().map_err(|e| e.to_string())?;
+            if adding && g.conditions.contains_key(&name) {
+                return Err(format!("global condition `{}` already exists", name));
+            }
+            if !adding && !g.conditions.contains_key(&name) {
+                return Err(format!("no global condition `{}` (use --add)", name));
+            }
+            if !adding {
+                if def == settings::ConditionDef::default() {
+                    return Err("--set needs one of --bool, --cmd, --global-ref".into());
+                }
+                if def.global.is_some() {
+                    return Err("global conditions cannot reference another global".into());
+                }
+            }
+            g.conditions.insert(name.clone(), def);
+            let p = settings::save_global(&g).map_err(|e| e.to_string())?;
+            println!(
+                "{} global condition `{}` in {}",
+                if adding { "Added" } else { "Updated" },
+                name,
+                p.display()
+            );
+            return Ok(());
+        }
+
+        let mut cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
+        if adding && cfg.conditions.contains_key(&name) {
+            return Err(format!("condition `{}` already exists", name));
+        }
+        if !adding {
+            if !cfg.conditions.contains_key(&name) {
+                return Err(format!("no condition `{}` (use --add)", name));
+            }
+            if def == settings::ConditionDef::default() {
+                return Err("--set needs one of --bool, --cmd, --global-ref".into());
+            }
+        }
+        cfg.conditions.insert(name.clone(), def);
+        settings::save(&cfg, project_root).map_err(|e| e.to_string())?;
+        println!(
+            "{} condition `{}`",
+            if adding { "Added" } else { "Updated" },
+            name
+        );
+        return Ok(());
+    }
+
+    if let Some(name) = args.remove {
+        if args.global_file {
+            let mut g = settings::load_global().map_err(|e| e.to_string())?;
+            if g.conditions.remove(&name).is_none() {
+                return Err(format!("no global condition `{}`", name));
+            }
+            settings::save_global(&g).map_err(|e| e.to_string())?;
+        } else {
+            let mut cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
+            if cfg.conditions.remove(&name).is_none() {
+                return Err(format!("no condition `{}`", name));
+            }
+            settings::save(&cfg, project_root).map_err(|e| e.to_string())?;
+        }
+        println!("Removed condition `{}`", name);
+        return Ok(());
+    }
+
+    // ---- read-only views: --hooks, --list (default) ----
+    let cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
+    let global = settings::load_global().map_err(|e| e.to_string())?;
+    let resolved = conditions::resolve_all(&cfg.conditions, &global, project_root);
+
+    if args.hooks {
+        // Only the command-backed ones — definitions whose resolution ran a shell command.
+        let hooks: Vec<_> = resolved
+            .iter()
+            .filter(|(_, r)| r.source.contains("cmd: "))
+            .collect();
+        if hooks.is_empty() {
+            println!("(no command-backed conditions)");
+            return Ok(());
+        }
+        for (name, r) in hooks {
+            println!("{:<24} {:<6} {}", name, r.value, r.source);
+        }
+        return Ok(());
+    }
+
+    let _ = args.list; // listing is also the default when no action flag is given
+    if resolved.is_empty() {
+        println!("(no conditions defined)");
+        println!(
+            "global config: {}",
+            settings::global_config_path().display()
+        );
+        return Ok(());
+    }
+    for (name, r) in &resolved {
+        println!("{:<24} {:<6} {}", name, r.value, r.source);
+    }
+    Ok(())
+}
+
+/// Resolve every condition (project + global) into the `(name, value)` pairs
+/// the parser consumes. Command-backed conditions run here, once per build.
+fn resolve_condition_pairs(
+    cfg: &VertionConfig,
+    project_root: &Path,
+) -> Result<Vec<(String, bool)>, String> {
+    let global = settings::load_global().map_err(|e| e.to_string())?;
+    let resolved = conditions::resolve_all(&cfg.conditions, &global, project_root);
+    Ok(conditions::to_pairs(&resolved))
 }
 
 // ---------- Wrap + path safety helpers ----------

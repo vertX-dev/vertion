@@ -13,6 +13,62 @@ pub const DEFAULT_CONFIG_NAME: &str = "vertion.cfg";
 /// projects don't break on upgrade.
 pub const LEGACY_CONFIG_NAME: &str = "vertion.toml";
 
+/// A named condition. Normally exactly one source is set; when several are,
+/// precedence is `cmd` > `global` > `bool` (see `conditions::resolve_one`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConditionDef {
+    /// Name of a condition in the global (user-level) config to defer to.
+    /// If that global condition doesn't exist, falls back to `bool`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global: Option<String>,
+    /// Literal value. The fallback when no `cmd`/`global` applies. Defaults to false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bool: Option<bool>,
+    /// Shell command; exit status 0 means true. Empty string counts as unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<String>,
+}
+
+/// User-level config (`~/.vertion/vertion.cfg`, or `$VERTION_GLOBAL_CONFIG`).
+/// Only holds conditions today.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GlobalConfig {
+    #[serde(default)]
+    pub conditions: BTreeMap<String, ConditionDef>,
+}
+
+/// Path of the user-level global config. `$VERTION_GLOBAL_CONFIG` overrides it
+/// (also what the tests use so they never touch a real home directory).
+pub fn global_config_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("VERTION_GLOBAL_CONFIG") {
+        return PathBuf::from(p);
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".vertion").join(DEFAULT_CONFIG_NAME)
+}
+
+pub fn load_global() -> Result<GlobalConfig, SettingsError> {
+    let p = global_config_path();
+    if !p.exists() {
+        return Ok(GlobalConfig::default());
+    }
+    let text = fs::read_to_string(&p)?;
+    Ok(toml::from_str(&text)?)
+}
+
+pub fn save_global(cfg: &GlobalConfig) -> Result<PathBuf, SettingsError> {
+    let p = global_config_path();
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let text = toml::to_string_pretty(cfg)?;
+    fs::write(&p, text)?;
+    Ok(p)
+}
+
 /// Whole-file version assignment: a concrete version (with optional tags), or
 /// `EXC` (always exclude — tags are irrelevant).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +93,9 @@ pub struct VertionConfig {
     /// assigned version fails the active filter; otherwise it copies as-is.
     #[serde(default, rename = "files")]
     pub files: Vec<FileVersion>,
+    /// Named conditions referenced by `{name}` on marker tags.
+    #[serde(default)]
+    pub conditions: BTreeMap<String, ConditionDef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,6 +228,7 @@ impl VertionConfig {
             profiles: BTreeMap::new(),
             include: Vec::new(),
             files: Vec::new(),
+            conditions: BTreeMap::new(),
         }
     }
 
@@ -347,7 +407,10 @@ pub fn save(cfg: &VertionConfig, project_root: &Path) -> Result<(), SettingsErro
 pub fn write_default_template(project_root: &Path) -> Result<PathBuf, SettingsError> {
     let existing = active_config_path(project_root);
     if existing.exists() {
-        return Err(SettingsError(format!("{} already exists", existing.display())));
+        return Err(SettingsError(format!(
+            "{} already exists",
+            existing.display()
+        )));
     }
     let p = config_path(project_root);
     let cfg = VertionConfig::default_template();

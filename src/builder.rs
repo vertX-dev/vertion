@@ -43,6 +43,8 @@ pub struct BuildOptions<'a> {
     /// Whole-file version assignments (normalized rel path → spec) from config.
     /// A file is excluded when its version fails the filter, or its spec is `EXC`.
     pub file_versions: &'a [(String, FileVersionSpec)],
+    /// Resolved `(name, value)` condition pairs for `{cond}` marker tags.
+    pub conditions: &'a [(String, bool)],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -207,6 +209,7 @@ pub fn build_file(
         tag_filter: opts.tags,
         extract_preserve_context: opts.preserve_context,
         strip_comments: opts.no_comments,
+        conditions: opts.conditions,
     };
     let result = process_file(&lines, style, opts.filter, process_opts);
 
@@ -234,6 +237,14 @@ pub fn build_file(
             rel.display(),
             line_no,
             reason
+        ));
+    }
+    for (line_no, name) in &result.unknown_conditions {
+        warnings.push(format!(
+            "{}:{}: unknown condition `{}` (treated as false)",
+            rel.display(),
+            line_no,
+            name
         ));
     }
 
@@ -357,6 +368,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            conditions: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(result.output.ends_with("1.0.0"));
@@ -404,6 +416,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &file_versions,
+            conditions: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("logo.png").exists());
@@ -449,6 +462,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &file_versions,
+            conditions: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("combat.png").exists());
@@ -476,6 +490,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &file_versions,
+            conditions: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("draft.png").exists());
@@ -501,6 +516,7 @@ mod tests {
             show_progress: false,
             no_comments: true,
             file_versions: &[],
+            conditions: &[],
         };
         let result = build_project(opts).unwrap();
         let a = fs::read_to_string(result.output.join("a.js")).unwrap();
@@ -529,6 +545,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            conditions: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(result.output.join("keep.js").exists());
@@ -555,6 +572,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            conditions: &[],
         };
         let result = build_project(opts).unwrap();
         let name = result
@@ -587,6 +605,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            conditions: &[],
         };
         assert!(build_project(opts).is_err());
         let _ = fs::remove_dir_all(&root);

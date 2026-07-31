@@ -481,7 +481,12 @@ mod tests {
         assert!(!passes("EXC", &[], &f, &[]));
         assert!(!passes("exc", &[], &f, &[]));
         // Even a wide range and ONLY reject EXC.
-        assert!(!passes("EXC", &[], &parse_filter(&[s("0.0"), s("9.9")]).unwrap(), &[]));
+        assert!(!passes(
+            "EXC",
+            &[],
+            &parse_filter(&[s("0.0"), s("9.9")]).unwrap(),
+            &[]
+        ));
     }
 
     #[test]

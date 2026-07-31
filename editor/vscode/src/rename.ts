@@ -6,7 +6,8 @@ import { pairDocument } from "./pairing";
 type RenameRole =
     | { kind: "version" }
     | { kind: "to" }
-    | { kind: "tag"; index: number };
+    | { kind: "tag"; index: number }
+    | { kind: "condition"; index: number };
 
 interface RenameTarget {
     span: MarkerSpan;
@@ -20,6 +21,14 @@ function findRenameTarget(marker: Marker, col: number): RenameTarget | null {
     }
     if (marker.toSpan && col >= marker.toSpan.start && col <= marker.toSpan.end) {
         return { span: marker.toSpan, role: { kind: "to" } };
+    }
+    // Conditions first: their spans sit inside the brackets alongside tags, and
+    // a cursor inside `{...}` should rename the condition, not the tag.
+    for (let i = 0; i < marker.conditionSpans.length; i++) {
+        const s = marker.conditionSpans[i];
+        if (col >= s.start && col <= s.end) {
+            return { span: s, role: { kind: "condition", index: i } };
+        }
     }
     for (let i = 0; i < marker.tagSpans.length; i++) {
         const s = marker.tagSpans[i];
@@ -38,6 +47,8 @@ function findSpanForRole(marker: Marker, role: RenameRole): MarkerSpan | null {
             return marker.toSpan;
         case "tag":
             return marker.tagSpans[role.index] ?? null;
+        case "condition":
+            return marker.conditionSpans[role.index] ?? null;
     }
 }
 
@@ -54,6 +65,7 @@ class RenameProvider implements vscode.RenameProvider {
             kind.kind !== "Versioned" &&
             kind.kind !== "All" &&
             kind.kind !== "Exclude" &&
+            kind.kind !== "TagOnly" &&
             kind.kind !== "InlineRange"
         ) {
             throw new Error("Not a Vertion marker token");
@@ -83,6 +95,7 @@ class RenameProvider implements vscode.RenameProvider {
             kind.kind !== "Versioned" &&
             kind.kind !== "All" &&
             kind.kind !== "Exclude" &&
+            kind.kind !== "TagOnly" &&
             kind.kind !== "InlineRange"
         ) {
             return undefined;
@@ -111,7 +124,8 @@ class RenameProvider implements vscode.RenameProvider {
                 partnerInfo &&
                 (partnerInfo.kind.kind === "Versioned" ||
                     partnerInfo.kind.kind === "All" ||
-                    partnerInfo.kind.kind === "Exclude")
+                    partnerInfo.kind.kind === "Exclude" ||
+                    partnerInfo.kind.kind === "TagOnly")
             ) {
                 const partnerSpan = findSpanForRole(
                     partnerInfo.kind.marker,
@@ -133,7 +147,8 @@ class RenameProvider implements vscode.RenameProvider {
         } else if (
             kind.kind === "Versioned" ||
             kind.kind === "All" ||
-            kind.kind === "Exclude"
+            kind.kind === "Exclude" ||
+            kind.kind === "TagOnly"
         ) {
             // Block-style marker with no partner — warn that only one side was edited.
             vscode.window.showWarningMessage(

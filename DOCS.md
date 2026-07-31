@@ -74,6 +74,21 @@ tags    = ["ui"]                # optional; filtered like in-code block tags
 [[files]]
 path    = "assets/wip.psd"
 version = "EXC"                 # excluded from every build, regardless of filter
+
+# Named conditions, referenced from markers as `[tag{name}]`.
+# Manage with `vertion condition`. Precedence: cmd > global > bool.
+[conditions.imagesInStable]
+global = "imagesInStable"       # defer to this condition in the global config
+bool   = false                  # literal value / fallback when the global is undefined
+cmd    = ''                     # shell command; exit 0 = true ('' means unset)
+```
+
+The user-level **global config** lives at `~/.vertion/vertion.cfg` (override with
+`$VERTION_GLOBAL_CONFIG`) and holds only `[conditions.*]`:
+
+```toml
+[conditions.apiReleased]
+bool = true
 ```
 
 ### `[project]` (required)
@@ -133,6 +148,20 @@ Whole-file version gating for files that can't hold comment markers. See [§5.9]
 | `version` | string | A version, evaluated against the active filter exactly like an in-code block. Or the literal `"EXC"` (case-insensitive) to exclude the file from **every** build unconditionally. |
 | `tags` | array of strings | Optional. Filtered by the active `--tag` set with the same OR-logic as in-code block tags: an untagged file always passes; a tagged file is kept only if it shares a tag. Ignored when `version = "EXC"`. |
 
+### `[conditions.NAME]`
+
+Named booleans referenced from markers as `[tag{NAME}]`. Resolved once per build. May be defined in the project config, the global config, or both (the project's definition wins).
+
+| Field | Type | Notes |
+|---|---|---|
+| `cmd` | string | Shell command run in the project root; exit status 0 → true. Output is captured and discarded. `''` counts as unset. |
+| `global` | string | Name of a condition in the **global** config to defer to. If that global condition doesn't exist, falls back to this entry's `bool` — the "waiting on something external" case: reads false until the global is defined. |
+| `bool` | boolean | Literal value, and the fallback when no `cmd`/`global` applies. Defaults to `false` when omitted. |
+
+Precedence when more than one is set: **`cmd` > `global` > `bool`**. Global entries resolve one level deep only (their own `global` field is ignored), so reference cycles are impossible.
+
+A condition defined **only** in the global config is still visible to every project's markers — you don't have to redeclare it locally unless you want a project-specific fallback or override.
+
 ---
 
 ## 2. Marker syntax
@@ -142,13 +171,13 @@ Whole-file version gating for files that can't hold comment markers. See [§5.9]
 After the line's comment prefix (`//` or `#`, see table below) and any leading whitespace:
 
 ```
-version <ws> <token1> [<ws> <token2>] [<ws> [tag1,tag2,...]] [<ws> *]
+version <ws> [<token1> [<ws> <token2>]] [<ws> [tag1,tag2{cond},...]] [<ws> *]
 ```
 
 - The keyword `version` is **case-sensitive** and must be lowercase. `//Version 1.2` is not recognized as a marker (it's just an ordinary comment).
-- `<token1>` is either a version (`"1"`, `"1.2"`, `"1.2.3"`), or one of the keywords `ALL` / `EXC` (case-insensitive detection, but keep casing consistent — see gotcha below).
+- `<token1>` is either a version (`"1"`, `"1.2"`, `"1.2.3"`), or one of the keywords `ALL` / `EXC` (case-insensitive detection, but keep casing consistent — see gotcha below). It may be **omitted entirely** when a `[tag]` list follows — see [tag-only markers](#tag-only-markers).
 - `<token2>` (optional) is a second version, only valid when `<token1>` is a real version — this turns the marker into a **range** marker.
-- `[tags]` (optional) is a comma-separated tag list in square brackets.
+- `[tags]` (optional) is a comma-separated tag list in square brackets. A tag may carry a `{condition}` — see [conditions](#tag-conditions).
 - Trailing `*` marks a **block** (paired open/close via a stack). Without `*`, a two-version marker is an **inline range** that applies to the next content line only.
 
 ### Comment prefix by file extension
@@ -223,6 +252,41 @@ No `*`, so this applies to exactly the next content line (not a block) — same 
 - **Untagged blocks always pass** the tag filter — `--tag` only constrains blocks that themselves carry tags, it never hides plain version blocks.
 - Tags can be combined with ranges: `//version 1.3 2.0 [beta] *`.
 
+### Tag-only markers
+
+The version may be dropped entirely, leaving the tag as the sole selector:
+
+```js
+//version [wiki]
+  ...docs-only code...
+//version [wiki]
+```
+
+- No version gate at all — only the tag filter (and any conditions) decide.
+- **Included by default.** With no `--tag` on the command line the block ships, exactly like today's rule that an empty tag filter passes everything. `--tag wiki` also keeps it; `--tag something-else` drops it.
+- Trailing `*` is allowed but optional. A tag-only marker is always a block — there's no inline form.
+- Pairing is by the **tag list**, not by version: `//version [a]` closes only with another `//version [a]`. Two adjacent tag-only blocks with different tags never cross-pair. Conditions are part of the pairing key too, so `[a{c1}]` will not close `[a{c2}]`.
+- `//version []` (empty list) is malformed.
+
+### Tag conditions
+
+A tag may carry a named condition in braces. The block is kept only when that condition resolves true:
+
+```js
+//version [stable{imagesInStable}]
+  loadImages();
+//version [stable{imagesInStable}]
+
+//version 1.2 [beta{apiReleased}] *      // conditions work alongside a version too
+  newApi();
+//version 1.2 [beta{apiReleased}] *
+```
+
+- Conditions are defined in `[conditions.NAME]` — see [§1](#1-config-file-vertioncfg) and [§5.10](#510-conditions).
+- **All conditions on a marker must be true** (AND) for it to pass, regardless of which tag matched the `--tag` filter. A condition is a veto: it applies in every filter mode, and a failing condition on an ancestor discards everything nested inside it.
+- An **unknown** condition name resolves to `false` (so the block is dropped) and emits a `unknown condition \`X\` (treated as false)` warning — which `--strict` turns into a build failure.
+- One condition per tag; `{...}` may not nest. There is no negation syntax — define an inverted condition instead.
+
 ### Nesting & the ancestor rule
 
 Every block in the nesting chain must **independently** satisfy the filter. If an outer block fails (including an `EXC` ancestor), everything inside it is discarded regardless of what the inner blocks say:
@@ -294,6 +358,7 @@ version = "EXC"
 | `vertion stats` | `S` | Project-wide marker statistics |
 | `vertion init` | — | Create `vertion.cfg` |
 | `vertion include` | — | Manage the persisted `[[include]]` list |
+| `vertion condition` | `c` | Manage the named `[conditions.*]` used by `{cond}` tags |
 
 Run `vertion --help` or `vertion <command> --help` for the live version of any of this.
 
@@ -455,6 +520,47 @@ Manages `[[include]]`. Exactly one mode per invocation:
 
 Adding a duplicate of an existing entry is a no-op (reported, not an error). Every add/remove rewrites the whole `[[include]]` array in `vertion.cfg`.
 
+### 4.13. `vertion condition`
+
+```
+vertion condition [--list] [--hooks]
+                  [--add NAME | --set NAME | --remove NAME]
+                  [--bool TRUE|FALSE | --cmd COMMAND | --global-ref NAME]
+                  [--global-file]
+```
+
+| Flag | Short | Effect |
+|---|---|---|
+| `--list` | `-l` | List every condition with its resolved value and the source that decided it. **This is the default** when no action flag is given. |
+| `--hooks` | — | List only the command-backed conditions (the "hooks"), with their commands and current results. |
+| `--add NAME` | `-a` | Create a condition. With no source flag it's a plain `bool = false` flag. Errors if it already exists. |
+| `--set NAME` | `-s` | Update an existing condition. Requires one source flag. Errors if it doesn't exist. |
+| `--remove NAME` | — | Delete a condition. |
+| `--bool TRUE\|FALSE` | — | Source: literal value. |
+| `--cmd COMMAND` | — | Source: shell command, exit 0 = true. |
+| `--global-ref NAME` | — | Source: defer to `NAME` in the global config. |
+| `--global-file` | `-G` | Read/write the user-level global config instead of the project one. |
+
+At most one of `--bool` / `--cmd` / `--global-ref` per invocation; `--add` and `--set` are mutually exclusive. Global conditions may not use `--global-ref` (no chaining).
+
+```sh
+vertion condition --add imagesInStable --bool false
+vertion condition --add apiReleased --global-ref apiReleased   # wait on a shared switch
+vertion condition --add hasAssets --cmd "test -d assets/img"   # a hook
+vertion condition --set imagesInStable --bool true
+vertion condition --add apiReleased --bool true --global-file  # flip it for every project
+vertion condition --list
+vertion condition --hooks
+```
+
+`--list` output is `name`, resolved value, source:
+
+```
+apiReleased              true   global:apiReleased → bool
+hasAssets                true   cmd: test -d assets/img
+imagesInStable           false  bool
+```
+
 ---
 
 ## 5. Feature deep dives
@@ -510,6 +616,30 @@ Malformed markers and unclosed blocks are warnings by default (printed, build co
 ### 5.8. Color output
 
 Success/warning/error lines are colorized (green/yellow/red) when stderr is a real terminal. Respects `NO_COLOR` (any value disables color).
+
+### 5.9. File-level versioning (`[[files]]`)
+
+See [§1](#files) for the schema. A file listed in `[[files]]` is excluded when its version fails the active filter, when its tags don't match `--tag`, or when its version is `EXC`. Files not listed are unaffected.
+
+### 5.10. Conditions
+
+Named booleans that gate marker tags (`[stable{imagesInStable}]`). Definitions live in `[conditions.NAME]` tables in the project config and/or the user-level global config; see [§1](#conditionsname) for the field-level schema and [§4.13](#413-vertion-condition) for the CLI.
+
+**Resolution happens once per build**, before any file is processed — so a `cmd` condition runs exactly one time regardless of project size, and every marker in the build sees a consistent value. `cmd` conditions run in the project root with their output captured and discarded; a command that fails to spawn resolves to `false`.
+
+Three ways to drive a condition:
+
+- **`bool`** — a manual project switch. Flip with `vertion condition --set NAME --bool true`.
+- **`cmd`** — probe something about the environment (`test -d assets/img`, a git check, a build artifact). Re-evaluated every build, and under `watch`, every rebuild.
+- **`global`** — defer to a machine-wide switch shared by every project. While the global condition is undefined the local `bool` fallback applies, so a project can ship "off" until you define the global once and every project picks it up.
+
+Evaluation semantics inside a build:
+
+- All conditions on a marker must be true (AND) for that marker to pass, independent of which tag matched `--tag`.
+- A failing condition is a veto in **every** filter mode, including `ALL` blocks, and it discards everything nested inside the marker.
+- Unknown condition names resolve to `false` and produce a per-line warning; `--strict` promotes that to a build failure.
+
+`vertion validate` does **not** currently check condition names (it doesn't read config) — unknown names surface as build warnings instead.
 
 ---
 

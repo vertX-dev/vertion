@@ -15,19 +15,24 @@ export interface MarkerSpan {
 }
 
 export interface Marker {
+    /** Empty for tag-only markers (`//version [wiki]`), which carry no version. */
     version: string;
     /** Upper bound for range markers; null for single-version or ALL. */
     to: string | null;
     tags: string[];
+    /** Condition names attached to this marker's tags (`[stable{cond}]`). */
+    conditions: string[];
     hasStar: boolean;
     /** Sub-token spans on the original line — used by rename + highlight. */
     versionSpan: MarkerSpan;
     toSpan: MarkerSpan | null;
     tagSpans: MarkerSpan[];
+    /** Spans of the condition names inside `{...}`, for rename/highlight. */
+    conditionSpans: MarkerSpan[];
     starSpan: MarkerSpan | null;
 }
 
-export type MarkerKind = { kind: 'Versioned'; marker: Marker } | { kind: 'All'; marker: Marker } | { kind: 'Exclude'; marker: Marker } | { kind: 'InlineRange'; marker: Marker } | { kind: 'Malformed'; reason: string } | { kind: 'None' };
+export type MarkerKind = { kind: 'Versioned'; marker: Marker } | { kind: 'All'; marker: Marker } | { kind: 'Exclude'; marker: Marker } | { kind: 'TagOnly'; marker: Marker } | { kind: 'InlineRange'; marker: Marker } | { kind: 'Malformed'; reason: string } | { kind: 'None' };
 
 const KEYWORD = 'version';
 
@@ -64,38 +69,42 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
 
     // 4. Require whitespace or EOL right after the keyword.
     if (cursor >= line.length) {
-        return malformed('missing version or `ALL` after `version`');
+        return malformed('missing version, `ALL`/`EXC`, or `[tags]` after `version`');
     }
     if (!isWhitespace(line.charAt(cursor))) {
         return { kind: 'None' };
     }
     cursor = skipWhitespace(line, cursor);
     if (cursor >= line.length) {
-        return malformed('missing version or `ALL` after `version`');
+        return malformed('missing version, `ALL`/`EXC`, or `[tags]` after `version`');
     }
 
-    // 5. First token: ALL or a version. Ends at next whitespace or `[`.
-    const tokenStart = cursor;
-    cursor = findTokenEnd(line, cursor);
-    const versionToken = line.slice(tokenStart, cursor);
-    const versionSpan: MarkerSpan = {
-        start: tokenStart,
-        end: cursor,
-        text: versionToken,
-    };
-    cursor = skipWhitespace(line, cursor);
+    // 5. First token: ALL, EXC, or a version — omitted entirely for tag-only
+    //    markers, where a `[tag]` list follows the keyword directly.
+    const tagOnly = line.charAt(cursor) === '[';
+    let versionToken = '';
+    let versionSpan: MarkerSpan = { start: cursor, end: cursor, text: '' };
+    let isAll = false;
+    let isExc = false;
+    if (!tagOnly) {
+        const tokenStart = cursor;
+        cursor = findTokenEnd(line, cursor);
+        versionToken = line.slice(tokenStart, cursor);
+        versionSpan = { start: tokenStart, end: cursor, text: versionToken };
+        cursor = skipWhitespace(line, cursor);
 
-    const upper = versionToken.toUpperCase();
-    const isAll = upper === 'ALL';
-    const isExc = upper === 'EXC';
+        const upper = versionToken.toUpperCase();
+        isAll = upper === 'ALL';
+        isExc = upper === 'EXC';
+        if (!isAll && !isExc && !isValidVersion(versionToken)) {
+            return malformed(`unparseable version \`${versionToken}\``);
+        }
+    }
     const isKeyword = isAll || isExc;
-    if (!isKeyword && !isValidVersion(versionToken)) {
-        return malformed(`unparseable version \`${versionToken}\``);
-    }
 
-    // 6. Optional second version token (`to`) — only for a real version (not ALL/EXC).
+    // 6. Optional second version token (`to`) — only for a real version (not ALL/EXC/tag-only).
     let toSpan: MarkerSpan | null = null;
-    if (!isKeyword && cursor < line.length && line.charAt(cursor) !== '[' && line.charAt(cursor) !== '*') {
+    if (!tagOnly && !isKeyword && cursor < line.length && line.charAt(cursor) !== '[' && line.charAt(cursor) !== '*') {
         const nextStart = cursor;
         const nextEnd = findTokenEnd(line, cursor);
         const nextToken = line.slice(nextStart, nextEnd);
@@ -108,8 +117,9 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
         }
     }
 
-    // 7. Optional [tags].
+    // 7. Optional [tags], each optionally carrying a `{condition}`.
     const tagSpans: MarkerSpan[] = [];
+    const conditionSpans: MarkerSpan[] = [];
     if (cursor < line.length && line.charAt(cursor) === '[') {
         const openBracket = cursor;
         const closeBracket = line.indexOf(']', openBracket + 1);
@@ -127,11 +137,33 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
             if (trimmed.length === 0) {
                 return malformed('empty tag in list');
             }
-            tagSpans.push({
-                start: tagSearch + lead,
-                end: commaOrEnd - trail,
-                text: trimmed,
-            });
+            const entryStart = tagSearch + lead;
+            const brace = trimmed.indexOf('{');
+            if (brace >= 0) {
+                if (!trimmed.endsWith('}')) {
+                    return malformed(`unterminated \`{\` condition on tag \`${trimmed.slice(0, brace)}\``);
+                }
+                const name = trimmed.slice(0, brace).trim();
+                const cond = trimmed.slice(brace + 1, trimmed.length - 1).trim();
+                if (name.length === 0) {
+                    return malformed('missing tag name before `{`');
+                }
+                if (cond.length === 0) {
+                    return malformed(`empty condition on tag \`${name}\``);
+                }
+                if (cond.includes('{') || cond.includes('}')) {
+                    return malformed(`malformed condition on tag \`${name}\``);
+                }
+                tagSpans.push({ start: entryStart, end: entryStart + name.length, text: name });
+                // Locate the condition text precisely inside the braces.
+                const condStart = entryStart + trimmed.indexOf(cond, brace + 1);
+                conditionSpans.push({ start: condStart, end: condStart + cond.length, text: cond });
+            } else {
+                if (trimmed.includes('}')) {
+                    return malformed(`stray \`}\` in tag \`${trimmed}\` (conditions are written \`tag{name}\`)`);
+                }
+                tagSpans.push({ start: entryStart, end: commaOrEnd - trail, text: trimmed });
+            }
             tagSearch = commaOrEnd + 1; // step past the comma
         }
         cursor = skipWhitespace(line, closeBracket + 1);
@@ -164,12 +196,17 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
         version: versionToken,
         to: toSpan ? toSpan.text : null,
         tags: tagSpans.map((t) => t.text),
+        conditions: conditionSpans.map((c) => c.text),
         hasStar,
         versionSpan,
         toSpan,
         tagSpans,
+        conditionSpans,
         starSpan,
     };
+    if (tagOnly) {
+        return { kind: 'TagOnly', marker };
+    }
     if (isAll) {
         return { kind: 'All', marker };
     }
@@ -314,8 +351,10 @@ function comparePreRelease(a: string, b: string): number {
 // pair when their (version, to) tuples are equal. ALL pairs on the literal
 // "ALL" (case-insensitive).
 
-export function markerPairKey(marker: Marker, kind: 'Versioned' | 'All' | 'Exclude'): string {
+export function markerPairKey(marker: Marker, kind: 'Versioned' | 'All' | 'Exclude' | 'TagOnly'): string {
     if (kind === 'Exclude') return 'EXC';
     if (kind === 'All') return 'ALL';
+    // Tag-only markers have no version, so they pair on their tag+condition list.
+    if (kind === 'TagOnly') return `T:${marker.tags.join(',')}|${marker.conditions.join(',')}`;
     return `V:${marker.version} ${marker.to ?? ''}`;
 }
