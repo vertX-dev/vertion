@@ -3,7 +3,7 @@ use std::io;
 use std::path::Path;
 
 use crate::config::{detect_comment_style, CommentStyle};
-use crate::parser::{detect_marker, MarkerKind};
+use crate::parser::{detect_marker, MarkerCondition, MarkerKind};
 
 #[derive(Debug, Clone)]
 pub struct Block {
@@ -13,8 +13,8 @@ pub struct Block {
     /// True for inline range markers (`//version 1.3 2.0` with no `*`). Single-line entries.
     pub inline: bool,
     pub tags: Vec<String>,
-    /// Condition names attached to this block's tags.
-    pub conditions: Vec<String>,
+    /// Conditions attached to this block's tags.
+    pub conditions: Vec<MarkerCondition>,
     pub start_line: usize,
     pub end_line: usize,
     pub depth: usize,
@@ -93,6 +93,15 @@ pub fn collect_blocks(lines: &[String], style: CommentStyle) -> Vec<Block> {
     roots
 }
 
+/// Render a block's conditions in source form (`cond`, `!cond`).
+fn display_conditions(blk: &Block, sep: &str) -> String {
+    blk.conditions
+        .iter()
+        .map(|c| c.display())
+        .collect::<Vec<_>>()
+        .join(sep)
+}
+
 fn attach(stack: &mut [Block], roots: &mut Vec<Block>, blk: Block) {
     if let Some(parent) = stack.last_mut() {
         parent.children.push(blk);
@@ -134,7 +143,7 @@ fn render_block(blk: &Block, show_tags: bool, out: &mut String) {
         String::new()
     };
     if show_tags && !blk.conditions.is_empty() {
-        tag_segment.push_str(&format!(" if: {}  ", blk.conditions.join(", ")));
+        tag_segment.push_str(&format!(" if: {}  ", display_conditions(blk, ", ")));
     }
     if blk.inline {
         // Inline range: single-line entry.
@@ -208,7 +217,7 @@ fn format_graph_label(blk: &Block) -> String {
         format!("{} [{}]", base, blk.tags.join(","))
     };
     if !blk.conditions.is_empty() {
-        out.push_str(&format!(" if {}", blk.conditions.join(",")));
+        out.push_str(&format!(" if {}", display_conditions(blk, ",")));
     }
     out
 }

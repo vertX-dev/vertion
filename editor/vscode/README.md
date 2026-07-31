@@ -4,12 +4,12 @@ Editor support for [Vertion](https://github.com/vertX-dev/vertion) version marke
 
 ## Features
 
-- **Syntax highlighting** for marker lines (`//version 1.2 *`, `//version 1.3 2.0 *`, `//version 1.2 [tag] *`, `//version [wiki]`, `//version [stable{cond}]`, `//version ALL`, `//version EXC`, and the `#` variants).
+- **Syntax highlighting** for marker lines (`//version 1.2 *`, `//version 1.3 2.0 *`, `//version 1.2 [tag] *`, `//version [wiki]`, `//version [stable{cond}]`, `//version [x{a}{!b}]`, `//version ALL`, `//version EXC`, and the `#` variants).
 - **Auto-close on Enter** — typing an opener like `//version 1.2 *` and pressing Enter inserts a matching close line beneath the cursor. `ALL`, `EXC`, and tag-only openers also auto-close. Inline range markers (no `*`) do not auto-close.
 - **Rename pair (F2)** — renaming the version, the upper bound, a tag, or a condition on one marker line updates its partner.
 - **Pair highlight** — placing the cursor on an open or close marker highlights both lines. Colors are configurable (see Settings below).
 - **Folding** — every paired block contributes a fold range that collapses through the close marker, so consecutive same-version blocks each fold cleanly.
-- **Snippets** — `verb`, `vera`, `vere`, `vertt`, `vertc`, `vert`, `verrb`, `verr` for the marker shapes (slash variant); same prefixes with `#` for hash-comment languages.
+- **Snippets** — `verb`, `vera`, `vere`, `vertt`, `vertc`, `vertn`, `vert`, `verrb`, `verr` for the marker shapes (slash variant); same prefixes with `#` for hash-comment languages.
 - **Commands** — `Vertion: Jump to Matching Marker` and `Vertion: Wrap Selection in Version Block` (Command Palette + rebindable keys).
 
 ## Commands & keybindings

@@ -60,7 +60,7 @@ describe("detectMarker — Rust grammar parity", () => {
         expect(k.kind).toBe("TagOnly");
         if (k.kind !== "TagOnly") return;
         expect(k.marker.tags).toEqual(["stable"]);
-        expect(k.marker.conditions).toEqual(["imagesInStable"]);
+        expect(k.marker.conditions).toEqual([{ name: "imagesInStable", negated: false }]);
     });
 
     it("parses conditions alongside a version", () => {
@@ -68,7 +68,40 @@ describe("detectMarker — Rust grammar parity", () => {
         expect(k.kind).toBe("Versioned");
         if (k.kind !== "Versioned") return;
         expect(k.marker.tags).toEqual(["a", "b"]);
-        expect(k.marker.conditions).toEqual(["c1"]);
+        expect(k.marker.conditions).toEqual([{ name: "c1", negated: false }]);
+    });
+
+    it("parses negated and multiple conditions per tag", () => {
+        const k = detectMarker("//version [stable{a}{!b}]", "//");
+        expect(k.kind).toBe("TagOnly");
+        if (k.kind !== "TagOnly") return;
+        expect(k.marker.tags).toEqual(["stable"]);
+        expect(k.marker.conditions).toEqual([
+            { name: "a", negated: false },
+            { name: "b", negated: true },
+        ]);
+        // Whitespace between groups and after `!` is tolerated.
+        const k2 = detectMarker("//version [stable{a} {! b}] *", "//");
+        if (k2.kind !== "TagOnly") {
+            expect.fail("expected TagOnly");
+            return;
+        }
+        expect(k2.marker.conditions).toEqual([
+            { name: "a", negated: false },
+            { name: "b", negated: true },
+        ]);
+    });
+
+    it("captures spans of negated conditions excluding the `!`", () => {
+        const text = "//version [stable{!imagesInStable}]";
+        const k = detectMarker(text, "//");
+        if (k.kind !== "TagOnly") {
+            expect.fail("expected TagOnly");
+            return;
+        }
+        const c = k.marker.conditionSpans[0];
+        // Renaming should replace the name only, never the `!`.
+        expect(text.slice(c.start, c.end)).toBe("imagesInStable");
     });
 
     it("captures condition spans correctly", () => {
@@ -91,6 +124,9 @@ describe("detectMarker — Rust grammar parity", () => {
             "//version [{noname}]",
             "//version [stable{}]",
             "//version [stable}]",
+            "//version [stable{!}]",
+            "//version [stable{a}junk]",
+            "//version [stable{!!a}]",
         ]) {
             expect(detectMarker(line, "//").kind, line).toBe("Malformed");
         }

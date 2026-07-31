@@ -103,6 +103,9 @@ Run `vertion --help` (or `vertion <subcommand> --help`) for the full flag list â
   ...code...
 //version [stable{imagesInStable}]
 
+//version [x{!legacy}]                // `!` negates
+//version [z{a}{!b}]                  // chain groups: a AND NOT b
+
 //version 1.3 2.0 *                   // range block: from <= build_upper < to
   ...code...
 //version 1.3 2.0 *
@@ -117,7 +120,7 @@ doSomethingFun();
 - Nesting rule: every block in the chain must independently pass the filter.
 - `ALL` blocks are always kept; `EXC` blocks are always dropped (an `EXC` ancestor excludes everything inside it, regardless of filter).
 - Tag-only markers drop the version entirely â€” the tag is the selector. They're included by default and filtered with `--tag`; they pair by tag list, so `[a]` never closes `[b]`.
-- A tag may carry a `{condition}` defined in `[conditions.*]`; every condition on a marker must resolve true, in every filter mode. Manage them with `vertion condition` (see below).
+- A tag may carry one or more `{condition}` groups defined in `[conditions.*]`; every condition on a marker must hold, in every filter mode. `{!name}` negates. An unknown name never passes (even negated) and warns. Manage them with `vertion condition` (see below).
 - `--no-comments` (`--noc`) strips whole-line comments from the built output. Trailing/inline comments and `//` inside strings are left alone.
 
 ## Config (`vertion.cfg`)
@@ -166,6 +169,11 @@ version = "1.0"
 [[files]]
 path = "assets/wip.psd"
 version = "EXC"          # always excluded, like an EXC block
+
+[[files]]
+path = "assets/new-ui.png"
+version = "1.0"
+conditions = ["!legacy"] # gated like a marker's {cond}; "!" negates
 
 # Named conditions for `[tag{name}]` markers. Precedence: cmd > global > bool.
 [conditions.imagesInStable]

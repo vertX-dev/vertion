@@ -47,8 +47,12 @@
               },
               "patterns": [
                 {
+                  "name": "keyword.operator.vertion",
+                  "match": "!"
+                },
+                {
                   "name": "entity.name.function.vertion",
-                  "match": "[^}]+"
+                  "match": "[^}!]+"
                 }
               ]
             },

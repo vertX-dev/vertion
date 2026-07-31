@@ -11,7 +11,7 @@ use walkdir::WalkDir;
 
 use crate::config::detect_comment_style;
 use crate::filter::{tag_passes, FilterMode};
-use crate::parser::{process_file, ProcessOptions};
+use crate::parser::{conditions_pass, process_file, ProcessOptions};
 use crate::settings::{normalize_path_key, FileVersionSpec};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -108,8 +108,13 @@ pub fn build_project(opts: BuildOptions<'_>) -> Result<BuildResult, io::Error> {
         // fails the filter/tags (or is `EXC`). Passing files fall through and copy as-is.
         match file_version_for(&rel, opts.file_versions) {
             Some(FileVersionSpec::Exclude) => continue,
-            Some(FileVersionSpec::At { version, tags })
-                if !opts.filter.version_matches(version) || !tag_passes(tags, opts.tags) =>
+            Some(FileVersionSpec::At {
+                version,
+                tags,
+                conditions,
+            }) if !opts.filter.version_matches(version)
+                || !tag_passes(tags, opts.tags)
+                || !conditions_pass(conditions, opts.conditions) =>
             {
                 continue
             }
@@ -394,6 +399,7 @@ mod tests {
                 FileVersionSpec::At {
                     version: parse_version("2.0").unwrap(),
                     tags: vec![],
+                    conditions: vec![],
                 },
             ),
             (
@@ -401,6 +407,7 @@ mod tests {
                 FileVersionSpec::At {
                     version: parse_version("1.0").unwrap(),
                     tags: vec![],
+                    conditions: vec![],
                 },
             ),
         ];
@@ -438,6 +445,7 @@ mod tests {
                 FileVersionSpec::At {
                     version: parse_version("1.0").unwrap(),
                     tags: vec!["combat".to_string()],
+                    conditions: vec![],
                 },
             ),
             (
@@ -445,6 +453,7 @@ mod tests {
                 FileVersionSpec::At {
                     version: parse_version("1.0").unwrap(),
                     tags: vec![],
+                    conditions: vec![],
                 },
             ),
         ];
@@ -467,6 +476,49 @@ mod tests {
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("combat.png").exists());
         assert!(result.output.join("shared.png").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn file_conditions_gate_the_file() {
+        let root = tmpdir("filecond");
+        let input = root.join("src");
+        let output = root.join("build");
+        write_file(&input.join("gated.png"), "x");
+        write_file(&input.join("negated.png"), "y");
+        let filter = parse_filter(&[String::from("1.0")]).unwrap();
+        let at = |conds: Vec<crate::parser::MarkerCondition>| FileVersionSpec::At {
+            version: parse_version("1.0").unwrap(),
+            tags: vec![],
+            conditions: conds,
+        };
+        let c = |name: &str, negated: bool| crate::parser::MarkerCondition {
+            name: name.to_string(),
+            negated,
+        };
+        let file_versions = vec![
+            ("gated.png".to_string(), at(vec![c("imgs", false)])),
+            ("negated.png".to_string(), at(vec![c("imgs", true)])),
+        ];
+        // imgs = true → gated.png kept, negated.png ({!imgs}) dropped.
+        let conditions = [("imgs".to_string(), true)];
+        let opts = BuildOptions {
+            input: &input,
+            output_root: &output,
+            filter: &filter,
+            ignore: &[],
+            tags: &[],
+            dev: false,
+            preserve_context: false,
+            strict: false,
+            show_progress: false,
+            no_comments: false,
+            file_versions: &file_versions,
+            conditions: &conditions,
+        };
+        let result = build_project(opts).unwrap();
+        assert!(result.output.join("gated.png").exists());
+        assert!(!result.output.join("negated.png").exists());
         let _ = fs::remove_dir_all(&root);
     }
 

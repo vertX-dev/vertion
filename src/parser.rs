@@ -1,6 +1,100 @@
 use crate::config::CommentStyle;
 use crate::filter::{parse_version, passes, passes_range_marker, tag_passes, FilterMode};
 
+/// One condition reference on a marker tag or `[[files]]` entry, e.g. `{cond}`
+/// or the negated `{!cond}`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkerCondition {
+    pub name: String,
+    pub negated: bool,
+}
+
+impl MarkerCondition {
+    /// Render back to source form: `name`, or `!name` when negated.
+    pub fn display(&self) -> String {
+        if self.negated {
+            format!("!{}", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+}
+
+/// Parse one condition token (`name` or `!name`), without the surrounding braces.
+pub fn parse_condition_token(body: &str) -> Result<MarkerCondition, String> {
+    let body = body.trim();
+    let (negated, name) = match body.strip_prefix('!') {
+        Some(rest) => (true, rest.trim()),
+        None => (false, body),
+    };
+    if name.is_empty() {
+        return Err("empty condition name".into());
+    }
+    if name.contains('!') || name.contains('{') || name.contains('}') {
+        return Err(format!("invalid condition name `{}`", name));
+    }
+    Ok(MarkerCondition {
+        name: name.to_string(),
+        negated,
+    })
+}
+
+/// Look up a resolved condition value by name.
+pub fn lookup(name: &str, resolved: &[(String, bool)]) -> Option<bool> {
+    resolved.iter().find(|(n, _)| n == name).map(|(_, v)| *v)
+}
+
+/// Every condition must hold (AND). Negated conditions invert the value.
+///
+/// An **unknown** condition never passes, negated or not — otherwise a typo in
+/// `{!typo}` would silently *include* code, which is the dangerous direction.
+pub fn conditions_pass(conds: &[MarkerCondition], resolved: &[(String, bool)]) -> bool {
+    conds.iter().all(|c| match lookup(&c.name, resolved) {
+        None => false,
+        Some(v) => v != c.negated,
+    })
+}
+
+/// Parse one `[tag]` entry: a tag name followed by zero or more
+/// `{[!]condition}` groups, e.g. `stable`, `stable{a}`, `stable{a}{!b}`.
+fn parse_tag_entry(entry: &str) -> Result<(String, Vec<MarkerCondition>), String> {
+    let (name, mut rest) = match entry.find('{') {
+        Some(i) => (entry[..i].trim(), &entry[i..]),
+        None => (entry.trim(), ""),
+    };
+    if name.is_empty() {
+        return Err("missing tag name before `{`".into());
+    }
+    if name.contains('}') {
+        return Err(format!(
+            "stray `}}` in tag `{}` (conditions are written `tag{{name}}`)",
+            name
+        ));
+    }
+    let mut conds = Vec::new();
+    loop {
+        rest = rest.trim_start();
+        if rest.is_empty() {
+            break;
+        }
+        if !rest.starts_with('{') {
+            return Err(format!(
+                "unexpected `{}` after conditions on tag `{}`",
+                rest.trim(),
+                name
+            ));
+        }
+        let Some(close) = rest.find('}') else {
+            return Err(format!("unterminated `{{` condition on tag `{}`", name));
+        };
+        let cond = parse_condition_token(&rest[1..close])
+            .map_err(|e| format!("{} on tag `{}`", e, name))?;
+        conds.push(cond);
+        rest = &rest[close + 1..];
+    }
+    Ok((name.to_string(), conds))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
     /// First token: a version string like "1.2", or the literal "ALL"/"EXC".
@@ -9,9 +103,9 @@ pub struct Marker {
     /// Upper bound for range markers (`//version 1.3 2.0`). `None` for single-version markers.
     pub to: Option<String>,
     pub tags: Vec<String>,
-    /// Condition names attached to this marker's tags (`[stable{imagesInStable}]`).
-    /// All of them must resolve true for the marker to pass.
-    pub conditions: Vec<String>,
+    /// Conditions attached to this marker's tags (`[stable{imagesInStable}]`).
+    /// All of them must hold for the marker to pass.
+    pub conditions: Vec<MarkerCondition>,
 }
 
 impl Marker {
@@ -148,9 +242,9 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
         }
     }
 
-    // Optional [tags], each optionally carrying a `{condition}`.
+    // Optional [tags], each optionally carrying one or more `{condition}` groups.
     let mut tags: Vec<String> = Vec::new();
-    let mut conditions: Vec<String> = Vec::new();
+    let mut conditions: Vec<MarkerCondition> = Vec::new();
     if let Some(rest_after_bracket) = cursor.strip_prefix('[') {
         let Some(close) = rest_after_bracket.find(']') else {
             return MarkerKind::Malformed("unterminated `[` tag list".into());
@@ -161,40 +255,12 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
             if t.is_empty() {
                 return MarkerKind::Malformed("empty tag in list".into());
             }
-            match t.find('{') {
-                Some(open) => {
-                    if !t.ends_with('}') {
-                        return MarkerKind::Malformed(format!(
-                            "unterminated `{{` condition on tag `{}`",
-                            &t[..open]
-                        ));
-                    }
-                    let name = t[..open].trim();
-                    let cond = t[open + 1..t.len() - 1].trim();
-                    if name.is_empty() {
-                        return MarkerKind::Malformed("missing tag name before `{`".into());
-                    }
-                    if cond.is_empty() {
-                        return MarkerKind::Malformed(format!("empty condition on tag `{}`", name));
-                    }
-                    if cond.contains('{') || cond.contains('}') {
-                        return MarkerKind::Malformed(format!(
-                            "malformed condition on tag `{}`",
-                            name
-                        ));
-                    }
-                    tags.push(name.to_string());
-                    conditions.push(cond.to_string());
+            match parse_tag_entry(t) {
+                Ok((name, mut conds)) => {
+                    tags.push(name);
+                    conditions.append(&mut conds);
                 }
-                None => {
-                    if t.contains('}') {
-                        return MarkerKind::Malformed(format!(
-                            "stray `}}` in tag `{}` (conditions are written `tag{{name}}`)",
-                            t
-                        ));
-                    }
-                    tags.push(t.to_string());
-                }
+                Err(reason) => return MarkerKind::Malformed(reason),
             }
         }
         cursor = rest_after_bracket[close + 1..].trim_start();
@@ -264,15 +330,9 @@ pub struct ProcessOptions<'a> {
     pub conditions: &'a [(String, bool)],
 }
 
-fn condition_value(name: &str, conditions: &[(String, bool)]) -> Option<bool> {
-    conditions.iter().find(|(n, _)| n == name).map(|(_, v)| *v)
-}
-
-/// Every condition on the marker must resolve true. Unknown names read false.
+/// Every condition on the marker must hold (see `conditions::conditions_pass`).
 fn conditions_hold(m: &Marker, conditions: &[(String, bool)]) -> bool {
-    m.conditions
-        .iter()
-        .all(|c| condition_value(c, conditions).unwrap_or(false))
+    conditions_pass(&m.conditions, conditions)
 }
 
 /// A whole-line comment: first non-whitespace char begins the comment prefix.
@@ -301,8 +361,8 @@ pub fn process_file(
     // Report each unresolvable condition once, on the marker line that names it.
     let note_unknown = |idx: usize, m: &Marker, sink: &mut Vec<(usize, String)>| {
         for c in &m.conditions {
-            if condition_value(c, opts.conditions).is_none() {
-                sink.push((idx + 1, c.clone()));
+            if lookup(&c.name, opts.conditions).is_none() {
+                sink.push((idx + 1, c.name.clone()));
             }
         }
     };
@@ -507,6 +567,20 @@ fn decide_inclusion(
 mod tests {
     use super::*;
     use crate::filter::parse_filter;
+
+    fn cond(name: &str) -> MarkerCondition {
+        MarkerCondition {
+            name: name.to_string(),
+            negated: false,
+        }
+    }
+
+    fn ncond(name: &str) -> MarkerCondition {
+        MarkerCondition {
+            name: name.to_string(),
+            negated: true,
+        }
+    }
 
     fn lines(s: &str) -> Vec<String> {
         s.lines().map(|l| l.to_string()).collect()
@@ -894,7 +968,7 @@ b";
                 version: String::new(),
                 to: None,
                 tags: vec!["stable".into()],
-                conditions: vec!["imagesInStable".into()],
+                conditions: vec![cond("imagesInStable")],
             })
         );
         // Conditions also work alongside a version.
@@ -902,10 +976,97 @@ b";
         match v {
             MarkerKind::Versioned(m) => {
                 assert_eq!(m.tags, vec!["a".to_string(), "b".to_string()]);
-                assert_eq!(m.conditions, vec!["c1".to_string()]);
+                assert_eq!(m.conditions, vec![cond("c1")]);
             }
             other => panic!("expected Versioned, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn detect_negated_and_multiple_conditions() {
+        let m = detect_marker("//version [stable{a}{!b}]", CommentStyle::DoubleSlash);
+        match m {
+            MarkerKind::TagOnly(m) => {
+                assert_eq!(m.tags, vec!["stable".to_string()]);
+                assert_eq!(m.conditions, vec![cond("a"), ncond("b")]);
+            }
+            other => panic!("expected TagOnly, got {:?}", other),
+        }
+        // Whitespace between groups and after `!` is tolerated.
+        let m2 = detect_marker("//version [stable{a} {! b}] *", CommentStyle::DoubleSlash);
+        match m2 {
+            MarkerKind::TagOnly(m) => assert_eq!(m.conditions, vec![cond("a"), ncond("b")]),
+            other => panic!("expected TagOnly, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn negated_condition_inverts() {
+        let src = "base\n//version [x{!off}]\nbody\n//version [x{!off}]\ntail";
+        let filter = parse_filter(&[String::from("1.0")]).unwrap();
+        // off = false → !off is true → included.
+        let off = [("off".to_string(), false)];
+        let r = process_file(
+            &lines(src),
+            CommentStyle::DoubleSlash,
+            &filter,
+            ProcessOptions {
+                conditions: &off,
+                ..Default::default()
+            },
+        );
+        assert_eq!(r.lines, vec!["base", "body", "tail"]);
+        // off = true → !off is false → excluded.
+        let on = [("off".to_string(), true)];
+        let r2 = process_file(
+            &lines(src),
+            CommentStyle::DoubleSlash,
+            &filter,
+            ProcessOptions {
+                conditions: &on,
+                ..Default::default()
+            },
+        );
+        assert_eq!(r2.lines, vec!["base", "tail"]);
+    }
+
+    #[test]
+    fn multiple_conditions_are_anded() {
+        let src = "//version [x{a}{b}]\nbody\n//version [x{a}{b}]";
+        let filter = parse_filter(&[String::from("1.0")]).unwrap();
+        let run_with = |pairs: &[(String, bool)]| {
+            process_file(
+                &lines(src),
+                CommentStyle::DoubleSlash,
+                &filter,
+                ProcessOptions {
+                    conditions: pairs,
+                    ..Default::default()
+                },
+            )
+            .lines
+        };
+        let both = [("a".to_string(), true), ("b".to_string(), true)];
+        assert_eq!(run_with(&both), vec!["body"]);
+        let one = [("a".to_string(), true), ("b".to_string(), false)];
+        assert!(run_with(&one).is_empty());
+    }
+
+    #[test]
+    fn unknown_condition_never_passes_even_negated() {
+        // A typo'd `{!name}` must not silently include the block.
+        let src = "//version [x{!nosuch}]\nbody\n//version [x{!nosuch}]";
+        let r = process_file(
+            &lines(src),
+            CommentStyle::DoubleSlash,
+            &parse_filter(&[String::from("1.0")]).unwrap(),
+            ProcessOptions::default(),
+        );
+        assert!(r.lines.is_empty());
+        assert_eq!(
+            r.unknown_conditions,
+            vec![(1, "nosuch".to_string()), (3, "nosuch".to_string())]
+        );
     }
 
     #[test]
@@ -915,6 +1076,9 @@ b";
             "//version [{noname}]",
             "//version [stable{}]",
             "//version [stable}]",
+            "//version [stable{!}]",
+            "//version [stable{a}junk]",
+            "//version [stable{!!a}]",
         ] {
             assert!(
                 matches!(

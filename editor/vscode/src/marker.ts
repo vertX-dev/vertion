@@ -14,14 +14,20 @@ export interface MarkerSpan {
     text: string;
 }
 
+/** One condition on a marker tag: `{cond}`, or negated `{!cond}`. */
+export interface MarkerCondition {
+    name: string;
+    negated: boolean;
+}
+
 export interface Marker {
     /** Empty for tag-only markers (`//version [wiki]`), which carry no version. */
     version: string;
     /** Upper bound for range markers; null for single-version or ALL. */
     to: string | null;
     tags: string[];
-    /** Condition names attached to this marker's tags (`[stable{cond}]`). */
-    conditions: string[];
+    /** Conditions attached to this marker's tags (`[stable{a}{!b}]`). */
+    conditions: MarkerCondition[];
     hasStar: boolean;
     /** Sub-token spans on the original line — used by rename + highlight. */
     versionSpan: MarkerSpan;
@@ -120,6 +126,7 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
     // 7. Optional [tags], each optionally carrying a `{condition}`.
     const tagSpans: MarkerSpan[] = [];
     const conditionSpans: MarkerSpan[] = [];
+    const conditionList: MarkerCondition[] = [];
     if (cursor < line.length && line.charAt(cursor) === '[') {
         const openBracket = cursor;
         const closeBracket = line.indexOf(']', openBracket + 1);
@@ -138,31 +145,14 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
                 return malformed('empty tag in list');
             }
             const entryStart = tagSearch + lead;
-            const brace = trimmed.indexOf('{');
-            if (brace >= 0) {
-                if (!trimmed.endsWith('}')) {
-                    return malformed(`unterminated \`{\` condition on tag \`${trimmed.slice(0, brace)}\``);
-                }
-                const name = trimmed.slice(0, brace).trim();
-                const cond = trimmed.slice(brace + 1, trimmed.length - 1).trim();
-                if (name.length === 0) {
-                    return malformed('missing tag name before `{`');
-                }
-                if (cond.length === 0) {
-                    return malformed(`empty condition on tag \`${name}\``);
-                }
-                if (cond.includes('{') || cond.includes('}')) {
-                    return malformed(`malformed condition on tag \`${name}\``);
-                }
-                tagSpans.push({ start: entryStart, end: entryStart + name.length, text: name });
-                // Locate the condition text precisely inside the braces.
-                const condStart = entryStart + trimmed.indexOf(cond, brace + 1);
-                conditionSpans.push({ start: condStart, end: condStart + cond.length, text: cond });
-            } else {
-                if (trimmed.includes('}')) {
-                    return malformed(`stray \`}\` in tag \`${trimmed}\` (conditions are written \`tag{name}\`)`);
-                }
-                tagSpans.push({ start: entryStart, end: commaOrEnd - trail, text: trimmed });
+            const parsed = parseTagEntry(trimmed, entryStart);
+            if ('error' in parsed) {
+                return malformed(parsed.error);
+            }
+            tagSpans.push(parsed.tag);
+            for (const c of parsed.conditions) {
+                conditionSpans.push(c.span);
+                conditionList.push({ name: c.span.text, negated: c.negated });
             }
             tagSearch = commaOrEnd + 1; // step past the comma
         }
@@ -196,7 +186,7 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
         version: versionToken,
         to: toSpan ? toSpan.text : null,
         tags: tagSpans.map((t) => t.text),
-        conditions: conditionSpans.map((c) => c.text),
+        conditions: conditionList,
         hasStar,
         versionSpan,
         toSpan,
@@ -221,6 +211,67 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
 
 function malformed(reason: string): MarkerKind {
     return { kind: 'Malformed', reason };
+}
+
+interface ParsedTagEntry {
+    tag: MarkerSpan;
+    conditions: { span: MarkerSpan; negated: boolean }[];
+}
+
+/**
+ * Parse one `[tag]` entry: a tag name followed by zero or more `{[!]condition}`
+ * groups — `stable`, `stable{a}`, `stable{a}{!b}`.
+ *
+ * Mirrors `parse_tag_entry` in `src/parser.rs`. `entryStart` is the column of
+ * `entry[0]` on the original line, so returned spans are absolute.
+ */
+function parseTagEntry(entry: string, entryStart: number): ParsedTagEntry | { error: string } {
+    const brace = entry.indexOf('{');
+    const rawName = brace >= 0 ? entry.slice(0, brace) : entry;
+    const name = rawName.trim();
+    if (name.length === 0) {
+        return { error: 'missing tag name before `{`' };
+    }
+    if (name.includes('}')) {
+        return { error: `stray \`}\` in tag \`${name}\` (conditions are written \`tag{name}\`)` };
+    }
+    const nameOffset = rawName.indexOf(name);
+    const tag: MarkerSpan = {
+        start: entryStart + nameOffset,
+        end: entryStart + nameOffset + name.length,
+        text: name,
+    };
+
+    const conditions: { span: MarkerSpan; negated: boolean }[] = [];
+    let i = brace >= 0 ? brace : entry.length;
+    while (i < entry.length) {
+        while (i < entry.length && isWhitespace(entry.charAt(i))) i++;
+        if (i >= entry.length) break;
+        if (entry.charAt(i) !== '{') {
+            return { error: `unexpected \`${entry.slice(i).trim()}\` after conditions on tag \`${name}\`` };
+        }
+        const close = entry.indexOf('}', i + 1);
+        if (close < 0) {
+            return { error: `unterminated \`{\` condition on tag \`${name}\`` };
+        }
+        const body = entry.slice(i + 1, close);
+        const trimmedBody = body.trim();
+        const negated = trimmedBody.startsWith('!');
+        const condName = (negated ? trimmedBody.slice(1) : trimmedBody).trim();
+        if (condName.length === 0) {
+            return { error: `empty condition name on tag \`${name}\`` };
+        }
+        if (condName.includes('!') || condName.includes('{') || condName.includes('}')) {
+            return { error: `invalid condition name \`${condName}\` on tag \`${name}\`` };
+        }
+        const condStart = entryStart + i + 1 + body.indexOf(condName);
+        conditions.push({
+            span: { start: condStart, end: condStart + condName.length, text: condName },
+            negated,
+        });
+        i = close + 1;
+    }
+    return { tag, conditions };
 }
 
 function isWhitespace(ch: string): boolean {
@@ -355,6 +406,9 @@ export function markerPairKey(marker: Marker, kind: 'Versioned' | 'All' | 'Exclu
     if (kind === 'Exclude') return 'EXC';
     if (kind === 'All') return 'ALL';
     // Tag-only markers have no version, so they pair on their tag+condition list.
-    if (kind === 'TagOnly') return `T:${marker.tags.join(',')}|${marker.conditions.join(',')}`;
+    if (kind === 'TagOnly') {
+        const conds = marker.conditions.map((c) => (c.negated ? `!${c.name}` : c.name)).join(',');
+        return `T:${marker.tags.join(',')}|${conds}`;
+    }
     return `V:${marker.version} ${marker.to ?? ''}`;
 }

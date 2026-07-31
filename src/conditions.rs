@@ -17,6 +17,10 @@ pub struct ResolvedCondition {
     pub source: String,
 }
 
+// The condition *syntax* types (`MarkerCondition`, `parse_condition_token`,
+// `conditions_pass`) live in `parser.rs` so they stay part of the pure library
+// surface. This module owns only resolution, which needs config + shell access.
+
 /// Non-empty-after-trim, else `None`. `cmd = ''` / `global = ''` count as unset.
 fn non_empty(s: Option<&String>) -> Option<&str> {
     s.map(|v| v.trim()).filter(|v| !v.is_empty())

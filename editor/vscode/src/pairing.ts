@@ -49,6 +49,11 @@ interface StackEntry {
     kind: PairKind;
 }
 
+/** Stable string form of a marker's conditions, for pairing comparisons. */
+function conditionKey(m: Marker): string {
+    return m.conditions.map((c) => (c.negated ? `!${c.name}` : c.name)).join(",");
+}
+
 /**
  * Fold-range computation from paired markers. Pure (no vscode types) so it can
  * be unit-tested.
@@ -141,7 +146,7 @@ export function pairLines(lines: string[], style: CommentStyle): PairingResult {
                     top &&
                     top.kind === "TagOnly" &&
                     top.marker.tags.join(",") === m.tags.join(",") &&
-                    top.marker.conditions.join(",") === m.conditions.join(",")
+                    conditionKey(top.marker) === conditionKey(m)
                 ) {
                     stack.pop();
                     pairs.push({

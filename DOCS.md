@@ -67,9 +67,10 @@ to   = "1.8"                    # from < to → an inclusive range
 # Zero or more. Whole-file version assignment for files that can't carry
 # in-line comment markers (images, binaries, most JSON/CSV).
 [[files]]
-path    = "assets/logo.png"     # relative to the effective input dir
-version = "2.0"                 # semver-ish string, or the literal "EXC"
-tags    = ["ui"]                # optional; filtered like in-code block tags
+path       = "assets/logo.png"  # relative to the effective input dir
+version    = "2.0"              # semver-ish string, or the literal "EXC"
+tags       = ["ui"]             # optional; filtered like in-code block tags
+conditions = ["!legacy"]        # optional; gated like a marker's `{cond}` ("!" negates)
 
 [[files]]
 path    = "assets/wip.psd"
@@ -147,6 +148,7 @@ Whole-file version gating for files that can't hold comment markers. See [§5.9]
 | `path` | string | Relative to the effective input directory. Leading `./` and `\` are normalized away, so `"assets/x.png"`, `"./assets/x.png"`, and Windows-style `"assets\x.png"` all match the same entry. No globs/wildcards — exact path only. |
 | `version` | string | A version, evaluated against the active filter exactly like an in-code block. Or the literal `"EXC"` (case-insensitive) to exclude the file from **every** build unconditionally. |
 | `tags` | array of strings | Optional. Filtered by the active `--tag` set with the same OR-logic as in-code block tags: an untagged file always passes; a tagged file is kept only if it shares a tag. Ignored when `version = "EXC"`. |
+| `conditions` | array of strings | Optional. Gates the file exactly like `{cond}` gates a marker — all must hold. Prefix a name with `!` to negate (`conditions = ["!legacy"]`). Unknown names never pass. Ignored when `version = "EXC"`. |
 
 ### `[conditions.NAME]`
 
@@ -282,10 +284,18 @@ A tag may carry a named condition in braces. The block is kept only when that co
 //version 1.2 [beta{apiReleased}] *
 ```
 
+Prefix a name with `!` to **negate** it, and chain groups to require several at once:
+
+```js
+//version [x{!legacy}]        // kept only when `legacy` is false
+//version [z{a}{!b}]          // kept only when `a` is true AND `b` is false
+//version 1.2 [a{c1},b{c2}] * // conditions on different tags combine too
+```
+
 - Conditions are defined in `[conditions.NAME]` — see [§1](#1-config-file-vertioncfg) and [§5.10](#510-conditions).
-- **All conditions on a marker must be true** (AND) for it to pass, regardless of which tag matched the `--tag` filter. A condition is a veto: it applies in every filter mode, and a failing condition on an ancestor discards everything nested inside it.
-- An **unknown** condition name resolves to `false` (so the block is dropped) and emits a `unknown condition \`X\` (treated as false)` warning — which `--strict` turns into a build failure.
-- One condition per tag; `{...}` may not nest. There is no negation syntax — define an inverted condition instead.
+- **All conditions on a marker must hold** (AND) for it to pass, regardless of which tag matched the `--tag` filter, and regardless of which tag each condition is attached to. A condition is a veto: it applies in every filter mode, and a failing condition on an ancestor discards everything nested inside it.
+- An **unknown** condition name never passes — **including when negated** — so a typo in `{!typo}` drops the block rather than silently including it. It also emits an `unknown condition \`X\`` warning, which `--strict` turns into a build failure.
+- `{...}` groups may not nest, and a name may not contain `!`, `{`, or `}`. Whitespace inside and between groups is fine (`[x{a} {! b}]`).
 
 ### Nesting & the ancestor rule
 
@@ -635,9 +645,11 @@ Three ways to drive a condition:
 
 Evaluation semantics inside a build:
 
-- All conditions on a marker must be true (AND) for that marker to pass, independent of which tag matched `--tag`.
+- All conditions on a marker must hold (AND) for that marker to pass, independent of which tag matched `--tag`.
+- `{!name}` negates: it holds when the condition resolves false.
 - A failing condition is a veto in **every** filter mode, including `ALL` blocks, and it discards everything nested inside the marker.
-- Unknown condition names resolve to `false` and produce a per-line warning; `--strict` promotes that to a build failure.
+- Unknown condition names **never** pass, negated or not, and produce a per-line warning; `--strict` promotes that to a build failure. (Unknown-as-false plus negation would otherwise make a typo silently *include* code.)
+- `[[files]]` entries accept the same conditions via a `conditions = [...]` list, with `"!name"` for negation.
 
 `vertion validate` does **not** currently check condition names (it doesn't read config) — unknown names surface as build warnings instead.
 

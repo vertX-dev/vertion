@@ -7,6 +7,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::filter::{parse_version, FilterMode, IncludeEntry, IncrementLevel};
+use crate::parser::{parse_condition_token, MarkerCondition};
 
 pub const DEFAULT_CONFIG_NAME: &str = "vertion.cfg";
 /// Older config name, still read (and written back to) if present so existing
@@ -73,7 +74,11 @@ pub fn save_global(cfg: &GlobalConfig) -> Result<PathBuf, SettingsError> {
 /// `EXC` (always exclude — tags are irrelevant).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileVersionSpec {
-    At { version: Version, tags: Vec<String> },
+    At {
+        version: Version,
+        tags: Vec<String>,
+        conditions: Vec<MarkerCondition>,
+    },
     Exclude,
 }
 
@@ -107,6 +112,10 @@ pub struct FileVersion {
     /// Ignored for `version = "EXC"`.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Optional conditions, gating the file the same way `{cond}` gates a marker.
+    /// Prefix a name with `!` to negate it. Ignored for `version = "EXC"`.
+    #[serde(default)]
+    pub conditions: Vec<String>,
 }
 
 /// Normalize a path for matching: forward slashes, no leading `./`.
@@ -309,10 +318,16 @@ impl VertionConfig {
                 let spec = if f.version.eq_ignore_ascii_case("EXC") {
                     FileVersionSpec::Exclude
                 } else {
+                    let conditions = f
+                        .conditions
+                        .iter()
+                        .map(|c| parse_condition_token(c).map_err(SettingsError))
+                        .collect::<Result<Vec<_>, _>>()?;
                     FileVersionSpec::At {
                         version: parse_version(&f.version)
                             .map_err(|e| SettingsError(e.to_string()))?,
                         tags: f.tags.clone(),
+                        conditions,
                     }
                 };
                 Ok((normalize_path_key(&f.path), spec))
