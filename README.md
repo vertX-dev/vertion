@@ -54,6 +54,7 @@ vertion build --include                      # build union of all entries
 # Post-build commands (also re-run after every `watch` rebuild)
 vertion build -v 1.2 --run "npm install" --run "npm run build"
 vertion watch -v 1.2 --run "npm run build"   # rebuild + re-run on every change
+vertion build -v 1.2 --run "make" --run-here  # run in the invocation dir, not ./build/1.2
 
 # Wrap: copy project files into an intermediate folder before building.
 # Lets you safely point `-I .` at the project root without colliding with output.

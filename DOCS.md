@@ -319,6 +319,7 @@ These three subcommands share one flag set. Not every flag applies to every one 
 | `--no-comments` | `--noc` | flag | off | Strip whole-line comments from output (see [§5.4](#54---no-comments---noc)). |
 | `--include` | `-i` | flag | off | Use the union of all `[[include]]` entries as the filter. Illegal together with `-v` or `--auto`. |
 | `--run` | `-r` | string (repeatable) | profile's `run` list | Shell command to run in the output folder after a successful build. Fully replaces the profile's `run` list when given (no merge). |
+| `--run-here` | — | flag | off | Run the `--run` commands in the directory vertion was invoked from, instead of the build output folder. |
 | `--wrap` | — | 0–2 values: `[MODE] [NAME]` | off | Copy project files into an intermediate folder first (see [§5.2](#52---wrap)). `MODE` must be `temp` or `perm` if given; `NAME` only makes sense alongside an explicit `MODE`. |
 | `--force` | — | flag | off | Allow an input path outside the project root (prints a warning instead of erroring). Does **not** bypass the output-inside-input check — use `--wrap` for that. |
 
@@ -496,7 +497,7 @@ Strips whole-line comments (any line whose first non-whitespace characters are t
 
 ### 5.5. Post-build `--run` commands
 
-Sequential shell commands executed in the build's **output** directory (the per-version subfolder, e.g. `./build/1.2.0`), not the input or project root. `cmd /C` on Windows, `sh -c` elsewhere; stdout/stderr stream live. Stops at the first non-zero exit and fails the whole `build`/`last` invocation (files remain on disk; only the command's own exit status propagates). Under `watch`, a failing run command is reported but does not stop the watcher — it retries on the next rebuild.
+Sequential shell commands executed in the build's **output** directory by default (the per-version subfolder, e.g. `./build/1.2.0`) — or in the directory vertion was invoked from when `--run-here` is given. `cmd /C` on Windows, `sh -c` elsewhere; stdout/stderr stream live. Stops at the first non-zero exit and fails the whole `build`/`last` invocation (files remain on disk; only the command's own exit status propagates). Under `watch`, a failing run command is reported but does not stop the watcher — it retries on the next rebuild.
 
 ### 5.6. `--dev` builds
 

@@ -93,4 +93,20 @@ mod tests {
         let cmds = vec!["true".to_string(), "true".to_string()];
         execute_run_commands(&cmds, &cwd).unwrap();
     }
+
+    #[test]
+    fn runs_in_the_given_cwd() {
+        // Backs `--run-here`: a relative-path command must resolve against the
+        // cwd we pass, not the process cwd.
+        let dir = std::env::temp_dir().join(format!("vertion-runner-cwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(windows)]
+        let cmds = vec!["type nul > marker.txt".to_string()];
+        #[cfg(not(windows))]
+        let cmds = vec!["touch marker.txt".to_string()];
+        execute_run_commands(&cmds, &dir).unwrap();
+        assert!(dir.join("marker.txt").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

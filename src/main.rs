@@ -159,6 +159,9 @@ struct BuildArgs {
     /// Run shell command in the output folder after a successful build (repeatable, sequential)
     #[arg(long, short = 'r')]
     run: Vec<String>,
+    /// Run `--run` commands in the directory vertion was invoked from, instead of the output folder
+    #[arg(long = "run-here")]
+    run_here: bool,
     /// Wrap project files into an intermediate folder before building.
     /// Forms: `--wrap`, `--wrap perm`, `--wrap temp NAME`, `--wrap perm NAME`.
     /// Default mode is `temp`, default name is `.vertion_wrap`.
@@ -435,7 +438,12 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
     // Post-build commands.
     let run_commands = runner::resolve_run_commands(&args.run, &resolved.run);
     if !run_commands.is_empty() {
-        runner::execute_run_commands(&run_commands, &result.output).map_err(|e| e.to_string())?;
+        let run_cwd: &Path = if args.run_here {
+            project_root
+        } else {
+            result.output.as_path()
+        };
+        runner::execute_run_commands(&run_commands, run_cwd).map_err(|e| e.to_string())?;
     }
 
     let (wrap_mode_str, wrap_name_str): (Option<&str>, Option<&str>) = match &wrap_settings {
@@ -604,7 +612,7 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
         file_versions: &file_versions,
     };
     let run_commands = runner::resolve_run_commands(&args.run, &resolved.run);
-    watcher::watch_and_rebuild(opts, &run_commands).map_err(|e| e.to_string())
+    watcher::watch_and_rebuild(opts, &run_commands, args.run_here).map_err(|e| e.to_string())
 }
 
 fn cmd_stats(input: &Path, ignore: &[PathBuf], json: bool) -> Result<(), String> {

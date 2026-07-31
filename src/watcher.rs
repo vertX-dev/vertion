@@ -25,7 +25,11 @@ fn time_divider() -> String {
     format!("{}{}", prefix, "─".repeat(dashes))
 }
 
-pub fn watch_and_rebuild(opts: BuildOptions<'_>, run_commands: &[String]) -> std::io::Result<()> {
+pub fn watch_and_rebuild(
+    opts: BuildOptions<'_>,
+    run_commands: &[String],
+    run_here: bool,
+) -> std::io::Result<()> {
     // Initial build.
     println!("{}", time_divider());
     match build_project(opts.clone()) {
@@ -36,7 +40,7 @@ pub fn watch_and_rebuild(opts: BuildOptions<'_>, run_commands: &[String]) -> std
                 r.files_processed,
                 r.time_ms
             );
-            run_after_build(run_commands, &r.output);
+            run_after_build(run_commands, &r.output, run_here);
         }
         Err(e) => eprintln!("  initial build failed: {}", e),
     }
@@ -71,7 +75,7 @@ pub fn watch_and_rebuild(opts: BuildOptions<'_>, run_commands: &[String]) -> std
                             r.files_processed,
                             r.time_ms
                         );
-                        run_after_build(run_commands, &r.output);
+                        run_after_build(run_commands, &r.output, run_here);
                     }
                     Err(e) => eprintln!("  rebuild failed: {}", e),
                 }
@@ -89,11 +93,12 @@ pub fn watch_and_rebuild(opts: BuildOptions<'_>, run_commands: &[String]) -> std
 /// Run post-build commands after a watch rebuild. Unlike a one-shot `build`, a failing
 /// command here must not tear down the watcher — report it and keep watching so the next
 /// save gets another chance.
-fn run_after_build(commands: &[String], output: &Path) {
+fn run_after_build(commands: &[String], output: &Path, run_here: bool) {
     if commands.is_empty() {
         return;
     }
-    if execute_run_commands(commands, output).is_err() {
+    let cwd: &Path = if run_here { Path::new(".") } else { output };
+    if execute_run_commands(commands, cwd).is_err() {
         eprintln!("  run failed (watching continues)");
     }
 }
