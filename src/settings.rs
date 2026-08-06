@@ -152,6 +152,11 @@ pub struct ProjectSection {
     pub output: PathBuf,
     #[serde(default)]
     pub ignore: Vec<PathBuf>,
+    /// Tags active when neither `--tag` nor a profile's `tags` is given.
+    /// Empty means no tags are active, so all tagged code and files are skipped.
+    /// Use `["*"]` to admit every tag.
+    #[serde(default)]
+    pub default_tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,8 +205,13 @@ pub struct ProfileSection {
     #[serde(default)]
     pub ignore: Vec<PathBuf>,
     pub increment: Option<String>,
+    /// Post-build commands executed **in the build output folder**.
     #[serde(default)]
     pub run: Vec<String>,
+    /// Post-build commands executed **in the directory vertion was invoked from**.
+    /// Runs after `run`.
+    #[serde(default)]
+    pub run_here: Vec<String>,
     /// Default tag filter for builds using this profile (CLI `--tag` replaces it when given).
     #[serde(default)]
     pub tags: Vec<String>,
@@ -229,6 +239,7 @@ impl VertionConfig {
                 input: default_input(),
                 output: default_output(),
                 ignore: vec![PathBuf::from("./build"), PathBuf::from("./node_modules")],
+                default_tags: Vec::new(),
             },
             build: BuildSection {
                 increment: default_increment(),
@@ -254,7 +265,9 @@ impl VertionConfig {
         let mut ignore = self.project.ignore.clone();
         let mut increment = self.build.increment.clone();
         let mut run: Vec<String> = Vec::new();
-        let mut tags: Vec<String> = Vec::new();
+        let mut run_here: Vec<String> = Vec::new();
+        // Project-level default; a profile's own `tags` replaces it when set.
+        let mut tags: Vec<String> = self.project.default_tags.clone();
         let mut wrap: Option<String> = None;
         let mut wrap_name: Option<String> = None;
 
@@ -281,6 +294,7 @@ impl VertionConfig {
                 increment = i.clone();
             }
             run = prof.run.clone();
+            run_here = prof.run_here.clone();
             tags = prof.tags.clone();
             wrap = prof.wrap.clone();
             wrap_name = prof.wrap_name.clone();
@@ -299,6 +313,7 @@ impl VertionConfig {
             increment: IncrementLevel::parse(&increment).unwrap(),
             profile: name.map(|s| s.to_string()),
             run,
+            run_here,
             tags,
             wrap,
             wrap_name,
@@ -343,6 +358,7 @@ pub struct ResolvedSettings {
     pub increment: IncrementLevel,
     pub profile: Option<String>,
     pub run: Vec<String>,
+    pub run_here: Vec<String>,
     pub tags: Vec<String>,
     pub wrap: Option<String>,
     pub wrap_name: Option<String>,
@@ -521,6 +537,7 @@ mod tests {
                 ignore: vec![PathBuf::from("tests")],
                 increment: Some("minor".into()),
                 run: Vec::new(),
+                run_here: Vec::new(),
                 tags: Vec::new(),
                 wrap: None,
                 wrap_name: None,
@@ -544,6 +561,25 @@ mod tests {
         assert_eq!(loaded.last.version, "1.2.0");
         assert!(loaded.last.dev);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_resolves_both_run_lists() {
+        let mut cfg = VertionConfig::default_template();
+        cfg.profiles.insert(
+            "prod".into(),
+            ProfileSection {
+                run: vec!["npm run build".into()],
+                run_here: vec!["git add build".into()],
+                ..Default::default()
+            },
+        );
+        let r = cfg.resolve_profile(Some("prod")).unwrap();
+        assert_eq!(r.run, vec!["npm run build".to_string()]);
+        assert_eq!(r.run_here, vec!["git add build".to_string()]);
+        // No profile → both empty.
+        let none = cfg.resolve_profile(None).unwrap();
+        assert!(none.run.is_empty() && none.run_here.is_empty());
     }
 
     #[test]

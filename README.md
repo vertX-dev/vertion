@@ -63,6 +63,11 @@ vertion build --include                      # build union of all entries
 vertion build -v 1.2 --run "npm install" --run "npm run build"
 vertion watch -v 1.2 --run "npm run build"   # rebuild + re-run on every change
 vertion build -v 1.2 --run "make" --run-here  # run in the invocation dir, not ./build/1.2
+# For a per-command mix, set both `run` and `run_here` on a profile (see config below)
+
+# Every spawned command gets the build's facts as VERTION_* env vars, so a
+# downstream tool can find the tree that was just built (see "Build environment").
+vertion build -v 1.2 --run "unified update-local --profile dev"
 
 # Wrap: copy project files into an intermediate folder before building.
 # Lets you safely point `-I .` at the project root without colliding with output.
@@ -115,13 +120,30 @@ doSomethingFun();
 ```
 
 - Same syntax for open and close — Vertion pairs them via a stack (matched on `(version, to)`).
-- Trailing `*` is optional but recommended on single-version markers; **required** on range blocks (two versions + `*`). Two versions **without** `*` is an inline range.
+- Trailing `*` is optional but recommended on single-version markers; **required** on range blocks (two versions + `*`). Two versions **without** `*` is an inline range. The `*` may be glued to the version (`//version 1.2*`).
 - Range marker condition: `from <= build_upper < to` (lower inclusive, upper exclusive). Range markers are skipped entirely in `ONLY` mode.
 - Nesting rule: every block in the chain must independently pass the filter.
 - `ALL` blocks are always kept; `EXC` blocks are always dropped (an `EXC` ancestor excludes everything inside it, regardless of filter).
-- Tag-only markers drop the version entirely — the tag is the selector. They're included by default and filtered with `--tag`; they pair by tag list, so `[a]` never closes `[b]`.
+- Tag-only markers drop the version entirely — the tag is the selector. They pair by tag list, so `[a]` never closes `[b]`.
+- **Tags are opt-in:** a tagged block ships only when one of its tags is active (`--tag`, else the profile's `tags`, else `[project].default_tags`). With none set, all tagged content is skipped. `*` is a wildcard admitting every tag. Untagged blocks are never affected.
 - A tag may carry one or more `{condition}` groups defined in `[conditions.*]`; every condition on a marker must hold, in every filter mode. `{!name}` negates. An unknown name never passes (even negated) and warns. Manage them with `vertion condition` (see below).
 - `--no-comments` (`--noc`) strips whole-line comments from the built output. Trailing/inline comments and `//` inside strings are left alone.
+
+## Per-version files (`.vertion.<target>/`)
+
+For files that differ wholesale between versions — images, binaries, generated data — store every version together in a directory named after the output file. The build picks one; no renaming step, no config entry.
+
+```text
+assets/.vertion.logo.png/
+    0.0.0.png              # fallback, any version
+    1.2.3e2.0.0.png        # 1.2.3 <= build < 2.0.0  (`e` = exclusive max)
+    2.0.0.png              # from 2.0.0 onward
+    2.0.0-beta.png         # >= 2.0.0 and tag `beta`
+    2.0.0-beta@ready.png   # ... and condition `ready`
+    .vertion.default.png   # used when nothing matches
+```
+
+`vertion build -v 2.5 --tag beta` writes `assets/logo.png` from `2.0.0-beta.png`. Highest version wins; at the same version the more specific variant (more tags/conditions) wins. Every variant must share the extension declared by the directory name. `.vertion.assets/` does the same for whole folders. See [DOCS.md](DOCS.md#59b-variant-directories-vertiontarget) for the full grammar.
 
 ## Config (`vertion.cfg`)
 
@@ -131,6 +153,8 @@ version = "1.2"
 input   = "./src"
 output  = "./build"
 ignore  = ["./build", "./node_modules"]
+default_tags = []        # tags active when --tag isn't given.
+                         # [] = skip all tagged content; ["*"] = allow every tag.
 
 [build]
 increment = "minor"          # major | minor | patch
@@ -144,7 +168,8 @@ dev        = false
 output    = "./build/prod"
 ignore    = ["tests", "debug"]
 increment = "minor"
-run       = ["npm install", "npm run build"]   # post-build commands
+run       = ["npm install", "npm run build"]   # post-build cmds, run in the OUTPUT folder
+run_here  = ["git add build"]                  # post-build cmds, run in the INVOCATION dir
 
 # Non-contiguous version set (used with `vertion build --include`).
 # Manage with `vertion include` / `vertion include --remove`.
@@ -192,6 +217,34 @@ Use a profile with `--profile prod`. `--auto` increments `[project].version` aft
 `[[files]]` assigns a version to a whole file. The file is excluded from the build when its version fails the active filter (e.g. `logo.png` above is dropped from any build below `2.0`); otherwise it copies as-is. Use `version = "EXC"` to exclude a file from every build. Applies to `build`, `extract`, and `watch`.
 
 > The config file is `vertion.cfg` (TOML syntax). A legacy `vertion.toml` is still read and written back to if present, so existing projects keep working — rename it to `vertion.cfg` when convenient.
+
+## Build environment
+
+Every command Vertion spawns — profile `run`, CLI `--run`, and `[conditions.*].cmd` probes — receives the build's facts as environment variables. A downstream tool can then locate the tree Vertion just produced instead of hardcoding a version that goes stale on the next bump:
+
+```toml
+# unified.cfg, in the project root — never touched when the version changes
+behavior_pack = "${VERTION_OUTPUT:-./src}/BP"
+```
+
+| Variable | Value |
+|---|---|
+| `VERTION_ROOT` | Project root — the directory holding `vertion.cfg` |
+| `VERTION_OUTPUT` | The versioned build folder just written |
+| `VERTION_OUTPUT_ROOT` | `VERTION_OUTPUT`'s parent — the configured `output`, resolved |
+| `VERTION_INPUT` | Input directory actually built from (the wrap folder under `--wrap`) |
+| `VERTION_VERSION` | Version the build was filtered at, e.g. `2.5.0` |
+| `VERTION_VERSION_DIR` | Leaf folder name — carries the timestamp suffix under `--dev` |
+| `VERTION_PROFILE` | Active profile name; empty when none |
+| `VERTION_MODE` | `cumulative` \| `range` \| `only` \| `include` |
+| `VERTION_TAGS` | Active tag filter, comma-joined; empty when none |
+| `VERTION_DEV` | `1` under `--dev`, else `0` |
+
+Paths are absolute and normalized. The values do **not** depend on `--run-here` — only `cwd` does — so a command can always reach both the project and the build output. Under `watch` they're recomputed per rebuild.
+
+One sharp edge: `cmd.exe` expands an empty-valued variable exactly like an undefined one, so `--profile "%VERTION_PROFILE%"` in a `run` line passes the literal `%VERTION_PROFILE%` when no profile is active. Name the profile outright in `run` commands; the empty string arrives intact for tools that read the environment themselves.
+
+Full details in [DOCS.md §5.11](DOCS.md#511-build-environment-vertion_).
 
 ## Performance notes
 

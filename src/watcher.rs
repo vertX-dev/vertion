@@ -6,7 +6,7 @@ use chrono::Local;
 use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode};
 
 use crate::builder::{build_project, BuildOptions};
-use crate::runner::execute_run_commands;
+use crate::runner::{execute_run_commands, BuildEnv};
 
 /// Width of the divider printed before each rebuild.
 const DIVIDER_WIDTH: usize = 64;
@@ -27,8 +27,9 @@ fn time_divider() -> String {
 
 pub fn watch_and_rebuild(
     opts: BuildOptions<'_>,
-    run_commands: &[String],
-    run_here: bool,
+    out_commands: &[String],
+    here_commands: &[String],
+    env: &BuildEnv,
 ) -> std::io::Result<()> {
     // Initial build.
     println!("{}", time_divider());
@@ -40,7 +41,7 @@ pub fn watch_and_rebuild(
                 r.files_processed,
                 r.time_ms
             );
-            run_after_build(run_commands, &r.output, run_here);
+            run_after_build(out_commands, here_commands, &r.output, env);
         }
         Err(e) => eprintln!("  initial build failed: {}", e),
     }
@@ -75,7 +76,7 @@ pub fn watch_and_rebuild(
                             r.files_processed,
                             r.time_ms
                         );
-                        run_after_build(run_commands, &r.output, run_here);
+                        run_after_build(out_commands, here_commands, &r.output, env);
                     }
                     Err(e) => eprintln!("  rebuild failed: {}", e),
                 }
@@ -93,12 +94,24 @@ pub fn watch_and_rebuild(
 /// Run post-build commands after a watch rebuild. Unlike a one-shot `build`, a failing
 /// command here must not tear down the watcher — report it and keep watching so the next
 /// save gets another chance.
-fn run_after_build(commands: &[String], output: &Path, run_here: bool) {
-    if commands.is_empty() {
+///
+/// The environment is re-pointed at *this* rebuild's output folder: under `--dev`
+/// every rebuild lands in a new timestamped directory, so a single `VERTION_OUTPUT`
+/// computed at startup would go stale after the first minute.
+fn run_after_build(
+    out_commands: &[String],
+    here_commands: &[String],
+    output: &Path,
+    env: &BuildEnv,
+) {
+    let run_env = env.with_output(output);
+    if !out_commands.is_empty() && execute_run_commands(out_commands, output, &run_env).is_err() {
+        eprintln!("  run failed (watching continues)");
         return;
     }
-    let cwd: &Path = if run_here { Path::new(".") } else { output };
-    if execute_run_commands(commands, cwd).is_err() {
-        eprintln!("  run failed (watching continues)");
+    if !here_commands.is_empty()
+        && execute_run_commands(here_commands, Path::new("."), &run_env).is_err()
+    {
+        eprintln!("  run_here failed (watching continues)");
     }
 }

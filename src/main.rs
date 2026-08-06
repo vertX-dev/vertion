@@ -8,6 +8,7 @@ mod runner;
 mod settings;
 mod stats;
 mod validator;
+mod variants;
 mod watcher;
 mod wrap;
 
@@ -422,8 +423,18 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         build_input = wrap_dir;
     }
 
+    let build_env = build_environment(
+        project_root,
+        &build_input,
+        &output,
+        &filter,
+        resolved.profile.as_deref(),
+        &tags,
+        dev,
+    );
+
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
-    let condition_pairs = resolve_condition_pairs(&cfg, project_root)?;
+    let condition_pairs = resolve_condition_pairs(&cfg, project_root, &build_env)?;
     let opts = BuildOptions {
         input: &build_input,
         output_root: &output,
@@ -473,15 +484,18 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         eprintln!("{}: {}", paint_warning("warning"), w);
     }
 
-    // Post-build commands.
-    let run_commands = runner::resolve_run_commands(&args.run, &resolved.run);
-    if !run_commands.is_empty() {
-        let run_cwd: &Path = if args.run_here {
-            project_root
-        } else {
-            result.output.as_path()
-        };
-        runner::execute_run_commands(&run_commands, run_cwd).map_err(|e| e.to_string())?;
+    // Post-build commands. `cwd` follows --run-here; the VERTION_* variables
+    // don't — that independence is what lets a command find both the project
+    // and the build output no matter where it was started from.
+    let (out_commands, here_commands) = resolve_run_lists(&args, &resolved);
+    let run_env = build_env.with_output(&result.output);
+    if !out_commands.is_empty() {
+        runner::execute_run_commands(&out_commands, result.output.as_path(), &run_env)
+            .map_err(|e| e.to_string())?;
+    }
+    if !here_commands.is_empty() {
+        runner::execute_run_commands(&here_commands, project_root, &run_env)
+            .map_err(|e| e.to_string())?;
     }
 
     let (wrap_mode_str, wrap_name_str): (Option<&str>, Option<&str>) = match &wrap_settings {
@@ -550,8 +564,17 @@ fn cmd_extract(
     } else {
         tag
     };
+    let build_env = build_environment(
+        project_root,
+        &input,
+        &output,
+        &filter,
+        resolved.profile.as_deref(),
+        &tags,
+        false,
+    );
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
-    let condition_pairs = resolve_condition_pairs(&cfg, project_root)?;
+    let condition_pairs = resolve_condition_pairs(&cfg, project_root, &build_env)?;
     let opts = BuildOptions {
         input: &input,
         output_root: &output,
@@ -641,8 +664,17 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
     } else {
         args.tag.clone()
     };
+    let build_env = build_environment(
+        project_root,
+        &input,
+        &output,
+        &filter,
+        resolved.profile.as_deref(),
+        &tags,
+        args.dev,
+    );
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
-    let condition_pairs = resolve_condition_pairs(&cfg, project_root)?;
+    let condition_pairs = resolve_condition_pairs(&cfg, project_root, &build_env)?;
     let opts = BuildOptions {
         input: &input,
         output_root: &output,
@@ -657,8 +689,9 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
         file_versions: &file_versions,
         conditions: &condition_pairs,
     };
-    let run_commands = runner::resolve_run_commands(&args.run, &resolved.run);
-    watcher::watch_and_rebuild(opts, &run_commands, args.run_here).map_err(|e| e.to_string())
+    let (out_commands, here_commands) = resolve_run_lists(&args, &resolved);
+    watcher::watch_and_rebuild(opts, &out_commands, &here_commands, &build_env)
+        .map_err(|e| e.to_string())
 }
 
 fn cmd_stats(input: &Path, ignore: &[PathBuf], json: bool) -> Result<(), String> {
@@ -846,9 +879,16 @@ fn cmd_condition(args: ConditionArgs) -> Result<(), String> {
     }
 
     // ---- read-only views: --hooks, --list (default) ----
+    // No build is happening, so there is no build environment to hand the probes —
+    // a `cmd` that reads VERTION_* sees it empty here, which is the honest answer.
     let cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
     let global = settings::load_global().map_err(|e| e.to_string())?;
-    let resolved = conditions::resolve_all(&cfg.conditions, &global, project_root);
+    let resolved = conditions::resolve_all(
+        &cfg.conditions,
+        &global,
+        project_root,
+        &runner::BuildEnv::default(),
+    );
 
     if args.hooks {
         // Only the command-backed ones — definitions whose resolution ran a shell command.
@@ -881,15 +921,64 @@ fn cmd_condition(args: ConditionArgs) -> Result<(), String> {
     Ok(())
 }
 
+/// Split post-build commands into the two lists and their working directories:
+/// `(run_in_output, run_in_invocation_dir)`.
+///
+/// `run` / `--run` execute in the build output folder and `run_here` executes
+/// in the directory vertion was invoked from, so one profile can mix both. The
+/// `--run-here` flag is a blanket override that moves the output list across
+/// for a single invocation.
+fn resolve_run_lists(
+    args: &BuildArgs,
+    resolved: &crate::settings::ResolvedSettings,
+) -> (Vec<String>, Vec<String>) {
+    let out = runner::resolve_run_commands(&args.run, &resolved.run);
+    let mut here = resolved.run_here.clone();
+    if args.run_here {
+        here.splice(0..0, out);
+        return (Vec::new(), here);
+    }
+    (out, here)
+}
+
 /// Resolve every condition (project + global) into the `(name, value)` pairs
-/// the parser consumes. Command-backed conditions run here, once per build.
+/// the parser consumes. Command-backed conditions run here, once per build, with
+/// the build's `VERTION_*` environment applied (empty outside a build).
 fn resolve_condition_pairs(
     cfg: &VertionConfig,
     project_root: &Path,
+    env: &runner::BuildEnv,
 ) -> Result<Vec<(String, bool)>, String> {
     let global = settings::load_global().map_err(|e| e.to_string())?;
-    let resolved = conditions::resolve_all(&cfg.conditions, &global, project_root);
+    let resolved = conditions::resolve_all(&cfg.conditions, &global, project_root, env);
     Ok(conditions::to_pairs(&resolved))
+}
+
+/// The `VERTION_*` environment for a build. `output` is a *prediction* — under
+/// `--dev` the real folder carries a `Local::now()` stamp, so callers must
+/// re-point it with `BuildEnv::with_output` once the build has run.
+#[allow(clippy::too_many_arguments)]
+fn build_environment(
+    project_root: &Path,
+    input: &Path,
+    output_root: &Path,
+    filter: &FilterMode,
+    profile: Option<&str>,
+    tags: &[String],
+    dev: bool,
+) -> runner::BuildEnv {
+    let predicted = builder::compute_output_dir(output_root, filter, dev);
+    let version = filter.upper().to_string();
+    runner::BuildEnv::new(&runner::BuildFacts {
+        root: project_root,
+        input,
+        output: &predicted,
+        version: &version,
+        mode: filter.name(),
+        profile,
+        tags,
+        dev,
+    })
 }
 
 // ---------- Wrap + path safety helpers ----------

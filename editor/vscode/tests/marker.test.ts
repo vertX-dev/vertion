@@ -44,6 +44,20 @@ describe("detectMarker — Rust grammar parity", () => {
         expect(detectMarker("#version EXC", "#").kind).toBe("Exclude");
     });
 
+    it("accepts `*` glued to the version", () => {
+        const k = detectMarker("//version 1.2*", "//");
+        expect(k.kind).toBe("Versioned");
+        if (k.kind !== "Versioned") return;
+        expect(k.marker.version).toBe("1.2");
+        expect(k.marker.hasStar).toBe(true);
+        const r = detectMarker("//version 1.3 2.0*", "//");
+        if (r.kind !== "Versioned") {
+            expect.fail("expected Versioned");
+            return;
+        }
+        expect(r.marker.to).toBe("2.0");
+    });
+
     it("parses tag-only markers", () => {
         const k = detectMarker("//version [wiki]", "//");
         expect(k.kind).toBe("TagOnly");

@@ -30,6 +30,9 @@ version = "1.2.0"              # required. Used as the implicit filter for `buil
 input   = "./src"               # default: "./src"
 output  = "./build"             # default: "./build"
 ignore  = ["./build", "./node_modules"]   # default: [] (init seeds these two)
+default_tags = []               # tags active when --tag / profile tags are absent.
+                                # [] = no tags active (all tagged content skipped);
+                                # ["*"] = every tag active.
 
 [build]
 increment = "minor"             # "major" | "minor" | "patch". Default: "minor".
@@ -50,7 +53,8 @@ input     = "./src"             # optional override
 output    = "./build/prod"      # optional override
 ignore    = ["tests", "debug"]  # optional override — REPLACES [project].ignore, not merged
 increment = "minor"             # optional override
-run       = ["npm install", "npm run build"]   # optional post-build commands
+run       = ["npm install", "npm run build"]   # post-build commands, run IN THE OUTPUT FOLDER
+run_here  = ["git add build"]                  # post-build commands, run IN THE INVOCATION DIR
 tags      = ["combat"]          # optional default tag filter (CLI --tag replaces it)
 wrap      = "temp"              # optional: "temp" | "perm"
 wrap_name = ".vertion_wrap"     # optional
@@ -100,6 +104,7 @@ bool = true
 | `input` | path | `"./src"` | |
 | `output` | path | `"./build"` | Root; a per-version subfolder is created beneath it. |
 | `ignore` | array of paths | `[]` | Paths under here are skipped entirely by `build`/`last`/`extract`/`watch`. |
+| `default_tags` | array of strings | `[]` | Tags active when neither `--tag` nor a profile's `tags` is given. **Empty means no tags are active**, so all tagged code and files are skipped. Use `["*"]` to admit every tag. |
 
 ### `[build]`
 
@@ -123,7 +128,8 @@ Selected with `-p NAME` / `--profile NAME` on `build`, `last`, `watch`, or `extr
 | `output` | path | Overrides `[project].output` if set. |
 | `ignore` | array of paths | **Replaces** `[project].ignore` entirely if non-empty (not merged). |
 | `increment` | string | Overrides `[build].increment` if set (validated). |
-| `run` | array of strings | Post-build shell commands. CLI `-r`/`--run` fully replaces this list (no merge) when given. |
+| `run` | array of strings | Post-build shell commands executed **in the build output folder**. CLI `-r`/`--run` fully replaces this list (no merge) when given. |
+| `run_here` | array of strings | Post-build shell commands executed **in the directory vertion was invoked from**. Runs after `run`. No CLI equivalent — set it per profile. |
 | `tags` | array of strings | Default tag filter for builds using this profile. CLI `-t`/`--tag` **replaces** this list entirely when given (no merge). |
 | `wrap` | `"temp"` \| `"perm"` | Default wrap mode for this profile. |
 | `wrap_name` | string | Default wrap folder name for this profile. |
@@ -180,7 +186,7 @@ version <ws> [<token1> [<ws> <token2>]] [<ws> [tag1,tag2{cond},...]] [<ws> *]
 - `<token1>` is either a version (`"1"`, `"1.2"`, `"1.2.3"`), or one of the keywords `ALL` / `EXC` (case-insensitive detection, but keep casing consistent — see gotcha below). It may be **omitted entirely** when a `[tag]` list follows — see [tag-only markers](#tag-only-markers).
 - `<token2>` (optional) is a second version, only valid when `<token1>` is a real version — this turns the marker into a **range** marker.
 - `[tags]` (optional) is a comma-separated tag list in square brackets. A tag may carry a `{condition}` — see [conditions](#tag-conditions).
-- Trailing `*` marks a **block** (paired open/close via a stack). Without `*`, a two-version marker is an **inline range** that applies to the next content line only.
+- Trailing `*` marks a **block** (paired open/close via a stack). Without `*`, a two-version marker is an **inline range** that applies to the next content line only. The `*` may be glued to the preceding token (`//version 1.2*`, `//version 1.3 2.0*`) — `*` can never be part of a version or tag, so no space is required.
 
 ### Comment prefix by file extension
 
@@ -250,8 +256,10 @@ No `*`, so this applies to exactly the next content line (not a block) — same 
 //version 1.2 *
 ```
 
-- `--tag NAME` (repeatable) filters by OR-logic: a tagged block is kept only if it shares **at least one** tag (case-insensitive) with the ones passed on the CLI.
-- **Untagged blocks always pass** the tag filter — `--tag` only constrains blocks that themselves carry tags, it never hides plain version blocks.
+- **Tags are opt-in.** A tagged block ships only when one of its tags is active. The effective tag set is `--tag`, else the profile's `tags`, else `[project].default_tags` — and if all three are empty, **no tags are active and every tagged block is skipped**.
+- `*` is a wildcard admitting every tagged block: `--tag '*'` or `default_tags = ["*"]`.
+- Tag matching is OR-logic and case-insensitive: a tagged block is kept if it shares **at least one** tag with the active set.
+- **Untagged blocks always pass** — tags only ever constrain content that carries them, so plain version blocks are never hidden.
 - Tags can be combined with ranges: `//version 1.3 2.0 [beta] *`.
 
 ### Tag-only markers
@@ -394,7 +402,7 @@ These three subcommands share one flag set. Not every flag applies to every one 
 | `--no-comments` | `--noc` | flag | off | Strip whole-line comments from output (see [§5.4](#54---no-comments---noc)). |
 | `--include` | `-i` | flag | off | Use the union of all `[[include]]` entries as the filter. Illegal together with `-v` or `--auto`. |
 | `--run` | `-r` | string (repeatable) | profile's `run` list | Shell command to run in the output folder after a successful build. Fully replaces the profile's `run` list when given (no merge). |
-| `--run-here` | — | flag | off | Run the `--run` commands in the directory vertion was invoked from, instead of the build output folder. |
+| `--run-here` | — | flag | off | Blanket override: run the `--run`/`run` commands in the directory vertion was invoked from instead of the output folder. For per-command control use the profile's `run_here` list. |
 | `--wrap` | — | 0–2 values: `[MODE] [NAME]` | off | Copy project files into an intermediate folder first (see [§5.2](#52---wrap)). `MODE` must be `temp` or `perm` if given; `NAME` only makes sense alongside an explicit `MODE`. |
 | `--force` | — | flag | off | Allow an input path outside the project root (prints a warning instead of erroring). Does **not** bypass the output-inside-input check — use `--wrap` for that. |
 
@@ -613,7 +621,64 @@ Strips whole-line comments (any line whose first non-whitespace characters are t
 
 ### 5.5. Post-build `--run` commands
 
-Sequential shell commands executed in the build's **output** directory by default (the per-version subfolder, e.g. `./build/1.2.0`) — or in the directory vertion was invoked from when `--run-here` is given. `cmd /C` on Windows, `sh -c` elsewhere; stdout/stderr stream live. Stops at the first non-zero exit and fails the whole `build`/`last` invocation (files remain on disk; only the command's own exit status propagates). Under `watch`, a failing run command is reported but does not stop the watcher — it retries on the next rebuild.
+There are **two** lists, distinguished only by their working directory:
+
+| Source | Runs in | Set via |
+|---|---|---|
+| `run` | the build output folder (per-version subfolder, e.g. `./build/1.2.0`) | `[profiles.X] run = [...]`, or CLI `-r`/`--run` (which replaces the profile list) |
+| `run_here` | the directory vertion was invoked from | `[profiles.X] run_here = [...]` |
+
+A profile can set both, which is the point: packaging steps that need to sit inside the output go in `run`, while things like `git add build` or a notification — which need the project root — go in `run_here`. `run` executes first, then `run_here`.
+
+```toml
+[profiles.release]
+run      = ["zip -r ../pack.zip ."]   # inside ./build/1.2.0
+run_here = ["git add build", "echo done"]   # in the project root
+```
+
+The `--run-here` **flag** is a blanket override for one invocation: it moves the `run` list over to the invocation directory, so everything executes there. It doesn't take command arguments — use the config field for per-command control.
+
+`cmd /C` on Windows, `sh -c` elsewhere; stdout/stderr stream live. Stops at the first non-zero exit and fails the whole `build`/`last` invocation (files remain on disk; only the command's own exit status propagates). Under `watch`, a failing command is reported but does not stop the watcher — it retries on the next rebuild, and a failing `run` list skips `run_here` for that rebuild.
+
+Every spawned command receives the build's facts as environment variables — see [§5.11](#511-build-environment-vertion_).
+
+### 5.11. Build environment (`VERTION_*`)
+
+Every command Vertion spawns — profile `run`, CLI `--run`, and `[conditions.NAME].cmd` probes — gets the build's facts as environment variables. This is what lets a downstream tool locate the tree Vertion just produced without the version being written down twice:
+
+```toml
+# unified.cfg, in the project root — never edited when the version bumps
+behavior_pack = "${VERTION_OUTPUT:-./src}/BP"
+```
+
+| Variable | Value |
+|---|---|
+| `VERTION_ROOT` | Project root — the directory holding `vertion.cfg` |
+| `VERTION_OUTPUT` | The versioned build folder just written |
+| `VERTION_OUTPUT_ROOT` | `VERTION_OUTPUT`'s parent — the configured `output`, resolved |
+| `VERTION_INPUT` | Input directory actually built from (the wrap folder when `--wrap` is live) |
+| `VERTION_VERSION` | Version the build was filtered at, e.g. `2.5.0` |
+| `VERTION_VERSION_DIR` | Leaf folder name — carries the timestamp suffix under `--dev` |
+| `VERTION_PROFILE` | Active profile name; empty when no profile is in use |
+| `VERTION_MODE` | Filter mode: `cumulative` \| `range` \| `only` \| `include` |
+| `VERTION_TAGS` | Active tag filter, comma-joined; empty when none |
+| `VERTION_DEV` | `1` under `--dev`, else `0` |
+
+- All four paths are **absolute** and lexically normalized (`.` dropped, `..` folded). They are not `canonicalize`d: the output folder may not exist yet when a condition probe runs, and symlinks are left alone.
+- **Independent of `--run-here`.** `cwd` moves; the variables don't. A command can always reach both the project root and the build output regardless of where it was started.
+- Set explicitly on the child, so a stale `VERTION_*` inherited from an outer build is **overwritten**, never merged.
+- Under `watch`, recomputed for every rebuild — necessary because `--dev` puts each rebuild in a new timestamped folder.
+- Outside a build (`validate`, `vertion condition --list`) nothing is exported and the variables are simply absent.
+- Condition probes run *before* the build, so their `VERTION_OUTPUT` is the folder about to be written — under `--dev` it can differ from the final folder by a minute. `run` commands always get the real one.
+
+**Empty values, and a Windows sharp edge.** `VERTION_PROFILE` and `VERTION_TAGS` are set to the empty string rather than left out, so a tool reading the environment can tell "no profile" (`""`) from "not run by Vertion" (absent). That distinction does **not** survive `cmd.exe`'s `%VAR%` interpolation: cmd expands an empty-valued variable exactly like an undefined one, leaving the text `%VERTION_PROFILE%` standing. So write the profile name out in `run` commands —
+
+```toml
+run = ["unified update-local --profile dev"]        # do this
+run = ['unified update-local --profile "%VERTION_PROFILE%"']   # not this
+```
+
+— and use the variables from *config files* read by the tool itself, where the empty string arrives intact.
 
 ### 5.6. `--dev` builds
 
@@ -630,6 +695,46 @@ Success/warning/error lines are colorized (green/yellow/red) when stderr is a re
 ### 5.9. File-level versioning (`[[files]]`)
 
 See [§1](#files) for the schema. A file listed in `[[files]]` is excluded when its version fails the active filter, when its tags don't match `--tag`, or when its version is `EXC`. Files not listed are unaffected.
+
+### 5.9b. Variant directories (`.vertion.<target>/`)
+
+For files that differ *wholesale* between versions — images, binaries, generated JSON — keep every version side by side in a directory named after the output, and let the build pick one. No renaming step, no config entry.
+
+```text
+assets/.vertion.logo.png/
+    0.0.0.png              # fallback — matches any version
+    1.2.3e2.0.0.png        # 1.2.3 <= build < 2.0.0
+    2.0.0.png              # from 2.0.0 onward
+    2.0.0-beta.png         # >= 2.0.0 and tag `beta`
+    2.0.0-beta@ready.png   # ... and condition `ready`
+    .vertion.default.png   # used when nothing else matches
+```
+
+A `-v 2.5 --tag beta` build writes `assets/logo.png` containing `2.0.0-beta.png`. The `.vertion.logo.png/` directory never appears in the output.
+
+**Variant name grammar** (the file stem):
+
+```
+[ <min> [ e<max> ] ]  ( [-] <tag> ( @<condition> )* )*
+```
+
+| Piece | Meaning |
+|---|---|
+| `1.2.3` | minimum version, inclusive |
+| `e2.0.0` | maximum version, **exclusive** — only valid after a min (`1.2.3e2.0.0`) |
+| `-tag` | requires that tag to be active; may be used without any version (`beta.png`). Several tags are OR'd |
+| `@cond` | a condition on the preceding tag; chainable (`beta@a@b`), and `@!cond` negates |
+
+The leading `-` is only needed when something precedes, so a stem may start with a tag directly. A segment is read as a version only if it parses as one — which is why `beta.png` is a tag and not a `b`/`ta` range.
+
+**Resolution**
+
+1. Every variant's extension must equal the one declared by the directory name → otherwise a hard error. (Folder variants have no extension, so the rule doesn't apply.)
+2. Keep variants whose version window contains the filter's upper bound, whose tags are active, and whose conditions all hold.
+3. **Highest version wins.** At the same version, the **more specific** variant wins — more tags, then more conditions — because `2.0.0-beta.png` exists precisely to override `2.0.0.png` for beta builds. A genuine tie (identical specificity) is a hard error.
+4. No match → `.vertion.default.<ext>` if present; otherwise nothing is emitted and a warning names the missing file (`--strict` turns that into a failure).
+
+**Folders** work the same way: `.vertion.assets/` holds variant *subdirectories* (`1.0.0/`, `2.0.0/`, `-beta/`), and the winner's whole subtree is copied out as `assets/`.
 
 ### 5.10. Conditions
 

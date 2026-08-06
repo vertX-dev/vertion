@@ -207,8 +207,9 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
     let mut is_all = false;
     let mut is_exc = false;
     if !tag_only {
+        // `*` terminates the token too, so `//version 1.2*` (no space) parses.
         let token_end = cursor
-            .find(|c: char| c.is_whitespace() || c == '[')
+            .find(|c: char| c.is_whitespace() || c == '[' || c == '*')
             .unwrap_or(cursor.len());
         token = &cursor[..token_end];
         cursor = cursor[token_end..].trim_start();
@@ -230,7 +231,7 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
         && !cursor.starts_with('*')
     {
         let next_end = cursor
-            .find(|c: char| c.is_whitespace() || c == '[')
+            .find(|c: char| c.is_whitespace() || c == '[' || c == '*')
             .unwrap_or(cursor.len());
         let next_token = &cursor[..next_end];
         // Peek: only consume as `to` if it parses as a version. Otherwise leave it
@@ -567,6 +568,11 @@ fn decide_inclusion(
 mod tests {
     use super::*;
     use crate::filter::parse_filter;
+
+    /// Wildcard tag filter — admits every tagged block.
+    fn any_tag() -> Vec<String> {
+        vec![String::from("*")]
+    }
 
     fn cond(name: &str) -> MarkerCondition {
         MarkerCondition {
@@ -983,6 +989,28 @@ b";
     }
 
     #[test]
+    fn star_may_be_glued_to_the_version() {
+        assert_eq!(
+            detect_marker("//version 1.2*", CommentStyle::DoubleSlash),
+            MarkerKind::Versioned(Marker {
+                version: "1.2".into(),
+                to: None,
+                tags: vec![],
+                conditions: vec![],
+            })
+        );
+        assert_eq!(
+            detect_marker("//version 1.3 2.0*", CommentStyle::DoubleSlash),
+            MarkerKind::Versioned(Marker {
+                version: "1.3".into(),
+                to: Some("2.0".into()),
+                tags: vec![],
+                conditions: vec![],
+            })
+        );
+    }
+
+    #[test]
     fn detect_negated_and_multiple_conditions() {
         let m = detect_marker("//version [stable{a}{!b}]", CommentStyle::DoubleSlash);
         match m {
@@ -1012,6 +1040,7 @@ b";
             &filter,
             ProcessOptions {
                 conditions: &off,
+                tag_filter: &any_tag(),
                 ..Default::default()
             },
         );
@@ -1024,6 +1053,7 @@ b";
             &filter,
             ProcessOptions {
                 conditions: &on,
+                tag_filter: &any_tag(),
                 ..Default::default()
             },
         );
@@ -1041,6 +1071,7 @@ b";
                 &filter,
                 ProcessOptions {
                     conditions: pairs,
+                    tag_filter: &any_tag(),
                     ..Default::default()
                 },
             )
@@ -1092,27 +1123,39 @@ b";
     }
 
     #[test]
-    fn tag_only_block_included_by_default_filtered_by_tag() {
-        let src = "base\n//version [wiki]\nwiki_body\n//version [wiki]\ntail";
-        // No --tag → included (empty tag filter passes everything).
-        assert_eq!(run(src, &["1.0"]), vec!["base", "wiki_body", "tail"]);
-
-        // --tag wiki → included.
+    fn tag_only_block_is_opt_in() {
+        let src = "base
+//version [wiki]
+wiki_body
+//version [wiki]
+tail";
         let filter = parse_filter(&[String::from("1.0")]).unwrap();
-        let opts = ProcessOptions {
-            tag_filter: &[String::from("wiki")],
-            ..Default::default()
+        let run_tags = |tags: &[String]| {
+            process_file(
+                &lines(src),
+                CommentStyle::DoubleSlash,
+                &filter,
+                ProcessOptions {
+                    tag_filter: tags,
+                    ..Default::default()
+                },
+            )
+            .lines
         };
-        let r = process_file(&lines(src), CommentStyle::DoubleSlash, &filter, opts);
-        assert_eq!(r.lines, vec!["base", "wiki_body", "tail"]);
-
-        // --tag other → the wiki block is dropped.
-        let opts2 = ProcessOptions {
-            tag_filter: &[String::from("other")],
-            ..Default::default()
-        };
-        let r2 = process_file(&lines(src), CommentStyle::DoubleSlash, &filter, opts2);
-        assert_eq!(r2.lines, vec!["base", "tail"]);
+        // No tags active -> tagged content is skipped.
+        assert_eq!(run_tags(&[]), vec!["base", "tail"]);
+        // Naming the tag activates it.
+        assert_eq!(
+            run_tags(&[String::from("wiki")]),
+            vec!["base", "wiki_body", "tail"]
+        );
+        // Wildcard admits every tag.
+        assert_eq!(
+            run_tags(&[String::from("*")]),
+            vec!["base", "wiki_body", "tail"]
+        );
+        // A different tag leaves it out.
+        assert_eq!(run_tags(&[String::from("other")]), vec!["base", "tail"]);
     }
 
     #[test]
@@ -1129,7 +1172,10 @@ in_b
             &lines(src),
             CommentStyle::DoubleSlash,
             &parse_filter(&[String::from("1.0")]).unwrap(),
-            ProcessOptions::default(),
+            ProcessOptions {
+                tag_filter: &any_tag(),
+                ..Default::default()
+            },
         );
         assert!(r.unclosed.is_empty());
         assert_eq!(r.lines, vec!["in_a", "in_b"]);
@@ -1147,6 +1193,7 @@ in_b
             &filter,
             ProcessOptions {
                 conditions: &on,
+                tag_filter: &any_tag(),
                 ..Default::default()
             },
         );
@@ -1159,6 +1206,7 @@ in_b
             &filter,
             ProcessOptions {
                 conditions: &off,
+                tag_filter: &any_tag(),
                 ..Default::default()
             },
         );
@@ -1195,6 +1243,7 @@ inner
             &parse_filter(&[String::from("1.0")]).unwrap(),
             ProcessOptions {
                 conditions: &off,
+                tag_filter: &any_tag(),
                 ..Default::default()
             },
         );

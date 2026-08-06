@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::runner::shell_test;
+use crate::runner::{shell_test, BuildEnv};
 use crate::settings::{ConditionDef, GlobalConfig};
 
 #[derive(Debug, Clone)]
@@ -33,9 +33,18 @@ fn non_empty(s: Option<&String>) -> Option<&str> {
 /// condition reads false until the global is defined. Global entries are
 /// resolved one level deep only (their own `global` field is ignored), so
 /// reference cycles are impossible by construction.
-pub fn resolve_one(def: &ConditionDef, global: &GlobalConfig, cwd: &Path) -> ResolvedCondition {
+///
+/// `env` carries the build's `VERTION_*` variables so a `cmd` probe can test the
+/// build it is about to gate (e.g. whether the output folder already exists).
+/// It is empty outside a build.
+pub fn resolve_one(
+    def: &ConditionDef,
+    global: &GlobalConfig,
+    cwd: &Path,
+    env: &BuildEnv,
+) -> ResolvedCondition {
     if let Some(cmd) = non_empty(def.cmd.as_ref()) {
-        let value = shell_test(cmd, cwd).unwrap_or(false);
+        let value = shell_test(cmd, cwd, env).unwrap_or(false);
         return ResolvedCondition {
             value,
             source: format!("cmd: {}", cmd),
@@ -44,7 +53,7 @@ pub fn resolve_one(def: &ConditionDef, global: &GlobalConfig, cwd: &Path) -> Res
     if let Some(name) = non_empty(def.global.as_ref()) {
         if let Some(g) = global.conditions.get(name) {
             if let Some(cmd) = non_empty(g.cmd.as_ref()) {
-                let value = shell_test(cmd, cwd).unwrap_or(false);
+                let value = shell_test(cmd, cwd, env).unwrap_or(false);
                 return ResolvedCondition {
                     value,
                     source: format!("global:{} → cmd: {}", name, cmd),
@@ -73,10 +82,11 @@ pub fn resolve_all(
     project: &BTreeMap<String, ConditionDef>,
     global: &GlobalConfig,
     cwd: &Path,
+    env: &BuildEnv,
 ) -> BTreeMap<String, ResolvedCondition> {
     let mut out = BTreeMap::new();
     for (name, def) in project {
-        out.insert(name.clone(), resolve_one(def, global, cwd));
+        out.insert(name.clone(), resolve_one(def, global, cwd, env));
     }
     for (name, def) in &global.conditions {
         if out.contains_key(name) {
@@ -87,7 +97,7 @@ pub fn resolve_all(
             global: None,
             ..def.clone()
         };
-        let mut r = resolve_one(&stripped, global, cwd);
+        let mut r = resolve_one(&stripped, global, cwd, env);
         r.source = format!("global:{} ({})", name, r.source);
         out.insert(name.clone(), r);
     }
@@ -115,19 +125,24 @@ mod tests {
         std::env::temp_dir()
     }
 
+    /// Resolve outside a build — the common case in these tests.
+    fn resolve(d: &ConditionDef, g: &GlobalConfig) -> ResolvedCondition {
+        resolve_one(d, g, &cwd(), &BuildEnv::default())
+    }
+
     #[test]
     fn bool_source() {
         let g = GlobalConfig::default();
-        assert!(resolve_one(&def(None, Some(true), None), &g, &cwd()).value);
-        assert!(!resolve_one(&def(None, Some(false), None), &g, &cwd()).value);
+        assert!(resolve(&def(None, Some(true), None), &g).value);
+        assert!(!resolve(&def(None, Some(false), None), &g).value);
         // Nothing set at all → false.
-        assert!(!resolve_one(&def(None, None, None), &g, &cwd()).value);
+        assert!(!resolve(&def(None, None, None), &g).value);
     }
 
     #[test]
     fn empty_cmd_and_global_count_as_unset() {
         let g = GlobalConfig::default();
-        let r = resolve_one(&def(Some(""), Some(true), Some("")), &g, &cwd());
+        let r = resolve(&def(Some(""), Some(true), Some("")), &g);
         assert!(r.value);
         assert_eq!(r.source, "bool");
     }
@@ -138,8 +153,30 @@ mod tests {
         let ok = if cfg!(windows) { "exit 0" } else { "true" };
         let bad = if cfg!(windows) { "exit 1" } else { "false" };
         // cmd beats a contradicting bool
-        assert!(resolve_one(&def(None, Some(false), Some(ok)), &g, &cwd()).value);
-        assert!(!resolve_one(&def(None, Some(true), Some(bad)), &g, &cwd()).value);
+        assert!(resolve(&def(None, Some(false), Some(ok)), &g).value);
+        assert!(!resolve(&def(None, Some(true), Some(bad)), &g).value);
+    }
+
+    #[test]
+    fn cmd_probe_sees_the_build_environment() {
+        use crate::runner::{var, BuildFacts};
+        let g = GlobalConfig::default();
+        let env = BuildEnv::new(&BuildFacts {
+            root: Path::new("."),
+            input: Path::new("./src"),
+            output: Path::new("./build/2.5.0"),
+            version: "2.5.0",
+            mode: "cumulative",
+            profile: None,
+            tags: &[],
+            dev: false,
+        });
+        #[cfg(windows)]
+        let probe = "if \"%VERTION_VERSION%\"==\"2.5.0\" (exit 0) else (exit 1)";
+        #[cfg(not(windows))]
+        let probe = "[ \"$VERTION_VERSION\" = \"2.5.0\" ]";
+        assert!(resolve_one(&def(None, Some(false), Some(probe)), &g, &cwd(), &env).value);
+        assert_eq!(env.get(var::VERSION), Some("2.5.0"));
     }
 
     #[test]
@@ -148,10 +185,10 @@ mod tests {
         g.conditions
             .insert("apiReleased".into(), def(None, Some(true), None));
         // Defined globally → uses the global value, not the local bool.
-        let r = resolve_one(&def(Some("apiReleased"), Some(false), None), &g, &cwd());
+        let r = resolve(&def(Some("apiReleased"), Some(false), None), &g);
         assert!(r.value);
         // Not defined globally → falls back to the local bool.
-        let r2 = resolve_one(&def(Some("notThere"), Some(false), None), &g, &cwd());
+        let r2 = resolve(&def(Some("notThere"), Some(false), None), &g);
         assert!(!r2.value);
         assert!(r2.source.contains("undefined"));
     }
@@ -162,7 +199,7 @@ mod tests {
         g.conditions
             .insert("apiReleased".into(), def(None, Some(true), None));
         let project = BTreeMap::new();
-        let all = resolve_all(&project, &g, &cwd());
+        let all = resolve_all(&project, &g, &cwd(), &BuildEnv::default());
         assert!(all.get("apiReleased").unwrap().value);
     }
 
@@ -172,7 +209,7 @@ mod tests {
         g.conditions.insert("x".into(), def(None, Some(true), None));
         let mut project = BTreeMap::new();
         project.insert("x".to_string(), def(None, Some(false), None));
-        let all = resolve_all(&project, &g, &cwd());
+        let all = resolve_all(&project, &g, &cwd(), &BuildEnv::default());
         assert!(!all.get("x").unwrap().value);
     }
 }

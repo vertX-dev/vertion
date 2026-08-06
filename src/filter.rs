@@ -210,17 +210,22 @@ pub fn parse_filter(args: &[String]) -> Result<FilterMode, FilterError> {
     }
 }
 
-/// Tag filter: OR-logic.
+/// Wildcard tag: admits every tagged block/file regardless of its tags.
+pub const TAG_WILDCARD: &str = "*";
+
+/// Tag filter: OR-logic, opt-in.
 ///
-/// - Empty filter → every block passes.
-/// - Untagged block → passes regardless of filter (tag filter only constrains
-///   blocks that actually carry tags).
+/// - Untagged block → always passes; tags only ever constrain tagged content.
+/// - `*` in the filter → every tagged block passes.
 /// - Tagged block → must share at least one tag (case-insensitive) with the filter.
+/// - Empty filter → **no tags are active**, so tagged content is skipped. The
+///   effective filter is `--tag`, else the profile's `tags`, else
+///   `[project].default_tags`.
 pub fn tag_passes(block_tags: &[String], tag_filter: &[String]) -> bool {
-    if tag_filter.is_empty() {
+    if block_tags.is_empty() {
         return true;
     }
-    if block_tags.is_empty() {
+    if tag_filter.iter().any(|f| f == TAG_WILDCARD) {
         return true;
     }
     block_tags

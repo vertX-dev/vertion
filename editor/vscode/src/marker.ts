@@ -294,7 +294,8 @@ function findTokenEnd(s: string, from: number): number {
     let i = from;
     while (i < s.length) {
         const c = s.charAt(i);
-        if (isWhitespace(c) || c === '[') return i;
+        // `*` terminates the token too, so `//version 1.2*` (no space) parses.
+        if (isWhitespace(c) || c === '[' || c === '*') return i;
         i++;
     }
     return i;
