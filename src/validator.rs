@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::config::detect_comment_style;
-use crate::parser::{detect_marker, MarkerKind};
+use crate::parser::{detect_marker, Marker, MarkerKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -82,7 +82,16 @@ fn validate_lines(
                     message: format!("malformed marker: {}", reason),
                 });
             }
-            MarkerKind::Versioned(m) | MarkerKind::All(m) => {
+            MarkerKind::Versioned(m)
+            | MarkerKind::All(m)
+            | MarkerKind::Exclude(m)
+            | MarkerKind::TagOnly(m) => {
+                // Tag-only markers have no version, so they pair on a synthetic
+                // `[tags]` label — everything below then works unchanged.
+                let m = Marker {
+                    version: m.pair_key(),
+                    ..m
+                };
                 let top_matches = stack
                     .last()
                     .map(|(v, t, _)| v == &m.version && t == &m.to)

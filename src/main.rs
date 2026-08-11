@@ -1,4 +1,5 @@
 mod builder;
+mod conditions;
 mod config;
 mod filter;
 mod inspect;
@@ -7,6 +8,7 @@ mod runner;
 mod settings;
 mod stats;
 mod validator;
+mod variants;
 mod watcher;
 mod wrap;
 
@@ -41,7 +43,7 @@ enum Command {
     /// Build a filtered output tree
     #[command(visible_alias = "b")]
     Build(BuildArgs),
-    /// Rebuild using the last build's settings (saved in vertion.toml)
+    /// Rebuild using the last build's settings (saved in vertion.cfg)
     #[command(visible_alias = "l")]
     Last(BuildArgs),
     /// Show version blocks in a file
@@ -102,10 +104,13 @@ enum Command {
         #[arg(long, short = 'j')]
         json: bool,
     },
-    /// Create a vertion.toml in the current directory
+    /// Create a vertion.cfg in the current directory
     Init,
-    /// Manage the persisted [[include]] entries in vertion.toml
+    /// Manage the persisted [[include]] entries in vertion.cfg
     Include(IncludeArgs),
+    /// Manage the named [conditions.*] used by `{cond}` marker tags
+    #[command(visible_alias = "c")]
+    Condition(ConditionArgs),
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -126,7 +131,7 @@ struct BuildArgs {
     /// Only include blocks matching this tag (repeatable, OR-logic)
     #[arg(long = "tag", short = 't')]
     tag: Vec<String>,
-    /// Use the named profile from vertion.toml
+    /// Use the named profile from vertion.cfg
     #[arg(long, short = 'p')]
     profile: Option<String>,
     /// Build to a timestamped folder (does not overwrite)
@@ -150,12 +155,18 @@ struct BuildArgs {
     /// Suppress the per-file progress bar (auto-suppressed when stderr is not a TTY)
     #[arg(long)]
     no_progress: bool,
-    /// Use the union of all `[[include]]` entries from vertion.toml as the filter
+    /// Strip whole-line comments from built output
+    #[arg(long = "no-comments", visible_alias = "noc")]
+    no_comments: bool,
+    /// Use the union of all `[[include]]` entries from vertion.cfg as the filter
     #[arg(long, short = 'i')]
     include: bool,
     /// Run shell command in the output folder after a successful build (repeatable, sequential)
     #[arg(long, short = 'r')]
     run: Vec<String>,
+    /// Run `--run` commands in the directory vertion was invoked from, instead of the output folder
+    #[arg(long = "run-here")]
+    run_here: bool,
     /// Wrap project files into an intermediate folder before building.
     /// Forms: `--wrap`, `--wrap perm`, `--wrap temp NAME`, `--wrap perm NAME`.
     /// Default mode is `temp`, default name is `.vertion_wrap`.
@@ -166,6 +177,37 @@ struct BuildArgs {
     /// (use `--wrap` for that).
     #[arg(long)]
     force: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+struct ConditionArgs {
+    /// List every condition with its resolved value and source (the default action)
+    #[arg(long, short = 'l')]
+    list: bool,
+    /// List only command-backed conditions (hooks), with their commands
+    #[arg(long)]
+    hooks: bool,
+    /// Create a new condition with this name
+    #[arg(long, short = 'a', value_name = "NAME")]
+    add: Option<String>,
+    /// Update the existing condition with this name
+    #[arg(long, short = 's', value_name = "NAME")]
+    set: Option<String>,
+    /// Remove the condition with this name
+    #[arg(long, value_name = "NAME")]
+    remove: Option<String>,
+    /// Source: literal value
+    #[arg(long = "bool", value_name = "TRUE|FALSE")]
+    bool_value: Option<bool>,
+    /// Source: shell command, exit status 0 means true
+    #[arg(long, value_name = "COMMAND")]
+    cmd: Option<String>,
+    /// Source: defer to this condition in the global config
+    #[arg(long = "global-ref", value_name = "NAME")]
+    global_ref: Option<String>,
+    /// Read/write the user-level global config instead of the project one
+    #[arg(long = "global-file", short = 'G')]
+    global_file: bool,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -231,6 +273,7 @@ fn run() -> Result<(), String> {
         } => cmd_stats(&input, &ignore, json),
         Command::Init => cmd_init(),
         Command::Include(args) => cmd_include(args),
+        Command::Condition(args) => cmd_condition(args),
     }
 }
 
@@ -250,7 +293,7 @@ fn resolve_filter(
                 let entries = cfg.include_entries().map_err(|e| e.to_string())?;
                 if entries.is_empty() {
                     return Err(
-                        "--include set but no [[include]] entries found in vertion.toml".into(),
+                        "--include set but no [[include]] entries found in vertion.cfg".into(),
                     );
                 }
                 return Ok(FilterMode::Include(entries));
@@ -264,13 +307,13 @@ fn resolve_filter(
         }
         BuildKind::Last => {
             if cfg.last.version.is_empty() && cfg.last.mode != "include" {
-                return Err("no previous build recorded in vertion.toml".into());
+                return Err("no previous build recorded in vertion.cfg".into());
             }
             if cfg.last.mode == "include" {
                 let entries = cfg.include_entries().map_err(|e| e.to_string())?;
                 if entries.is_empty() {
                     return Err(
-                        "last build used --include but no entries remain in vertion.toml".into(),
+                        "last build used --include but no entries remain in vertion.cfg".into(),
                     );
                 }
                 return Ok(FilterMode::Include(entries));
@@ -336,6 +379,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
     };
 
     let (tags, dev) = if matches!(kind, BuildKind::Last) {
+        // last.tags already reflects the profile tags that were in effect last time.
         let tags = if !args.tag.is_empty() {
             args.tag.clone()
         } else {
@@ -344,7 +388,13 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         let dev = args.dev || cfg.last.dev;
         (tags, dev)
     } else {
-        (args.tag.clone(), args.dev)
+        // CLI --tag replaces the profile's tags entirely; otherwise use the profile's.
+        let tags = if !args.tag.is_empty() {
+            args.tag.clone()
+        } else {
+            resolved.tags.clone()
+        };
+        (tags, args.dev)
     };
 
     // ---- Resolve wrap settings: CLI > profile > [last] (for `vertion last`) ----
@@ -373,6 +423,18 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         build_input = wrap_dir;
     }
 
+    let build_env = build_environment(
+        project_root,
+        &build_input,
+        &output,
+        &filter,
+        resolved.profile.as_deref(),
+        &tags,
+        dev,
+    );
+
+    let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
+    let condition_pairs = resolve_condition_pairs(&cfg, project_root, &build_env)?;
     let opts = BuildOptions {
         input: &build_input,
         output_root: &output,
@@ -383,6 +445,9 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         preserve_context: false,
         strict: args.strict,
         show_progress: !args.no_progress,
+        no_comments: args.no_comments,
+        file_versions: &file_versions,
+        conditions: &condition_pairs,
     };
 
     let build_outcome = build_project(opts);
@@ -419,10 +484,18 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         eprintln!("{}: {}", paint_warning("warning"), w);
     }
 
-    // Post-build commands.
-    let run_commands = runner::resolve_run_commands(&args.run, &resolved.run);
-    if !run_commands.is_empty() {
-        runner::execute_run_commands(&run_commands, &result.output).map_err(|e| e.to_string())?;
+    // Post-build commands. `cwd` follows --run-here; the VERTION_* variables
+    // don't — that independence is what lets a command find both the project
+    // and the build output no matter where it was started from.
+    let (out_commands, here_commands) = resolve_run_lists(&args, &resolved);
+    let run_env = build_env.with_output(&result.output);
+    if !out_commands.is_empty() {
+        runner::execute_run_commands(&out_commands, result.output.as_path(), &run_env)
+            .map_err(|e| e.to_string())?;
+    }
+    if !here_commands.is_empty() {
+        runner::execute_run_commands(&here_commands, project_root, &run_env)
+            .map_err(|e| e.to_string())?;
     }
 
     let (wrap_mode_str, wrap_name_str): (Option<&str>, Option<&str>) = match &wrap_settings {
@@ -446,7 +519,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         let next = autoincrement(base, increment);
         save_version(project_root, &next.to_string()).map_err(|e| e.to_string())?;
         println!(
-            "auto-increment: vertion.toml [project].version = {} ({})",
+            "auto-increment: vertion.cfg [project].version = {} ({})",
             next,
             increment.as_str()
         );
@@ -485,16 +558,36 @@ fn cmd_extract(
     let mut all_ignore = resolved.ignore.clone();
     all_ignore.extend(ignore);
 
+    // CLI --tag replaces the profile's tags entirely; otherwise use the profile's.
+    let tags = if tag.is_empty() {
+        resolved.tags.clone()
+    } else {
+        tag
+    };
+    let build_env = build_environment(
+        project_root,
+        &input,
+        &output,
+        &filter,
+        resolved.profile.as_deref(),
+        &tags,
+        false,
+    );
+    let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
+    let condition_pairs = resolve_condition_pairs(&cfg, project_root, &build_env)?;
     let opts = BuildOptions {
         input: &input,
         output_root: &output,
         filter: &filter,
         ignore: &all_ignore,
-        tags: &tag,
+        tags: &tags,
         dev: false,
         preserve_context,
         strict,
         show_progress: true,
+        no_comments: false,
+        file_versions: &file_versions,
+        conditions: &condition_pairs,
     };
     let result = build_project(opts).map_err(|e| e.to_string())?;
     println!(
@@ -565,18 +658,40 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
     let mut ignore = resolved.ignore.clone();
     ignore.extend(args.ignore.iter().cloned());
 
+    // CLI --tag replaces the profile's tags entirely; otherwise use the profile's.
+    let tags = if args.tag.is_empty() {
+        resolved.tags.clone()
+    } else {
+        args.tag.clone()
+    };
+    let build_env = build_environment(
+        project_root,
+        &input,
+        &output,
+        &filter,
+        resolved.profile.as_deref(),
+        &tags,
+        args.dev,
+    );
+    let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
+    let condition_pairs = resolve_condition_pairs(&cfg, project_root, &build_env)?;
     let opts = BuildOptions {
         input: &input,
         output_root: &output,
         filter: &filter,
         ignore: &ignore,
-        tags: &args.tag,
+        tags: &tags,
         dev: args.dev,
         preserve_context: false,
         strict: args.strict,
         show_progress: !args.no_progress,
+        no_comments: args.no_comments,
+        file_versions: &file_versions,
+        conditions: &condition_pairs,
     };
-    watcher::watch_and_rebuild(opts).map_err(|e| e.to_string())
+    let (out_commands, here_commands) = resolve_run_lists(&args, &resolved);
+    watcher::watch_and_rebuild(opts, &out_commands, &here_commands, &build_env)
+        .map_err(|e| e.to_string())
 }
 
 fn cmd_stats(input: &Path, ignore: &[PathBuf], json: bool) -> Result<(), String> {
@@ -659,6 +774,211 @@ fn cmd_include(args: IncludeArgs) -> Result<(), String> {
         println!("Added include entry {} → {}", entry.from, entry.to);
     }
     Ok(())
+}
+
+fn cmd_condition(args: ConditionArgs) -> Result<(), String> {
+    let project_root = Path::new(".");
+
+    // Build the requested source from --bool / --cmd / --global-ref.
+    let source = |a: &ConditionArgs| -> Result<settings::ConditionDef, String> {
+        let n = [
+            a.bool_value.is_some(),
+            a.cmd.is_some(),
+            a.global_ref.is_some(),
+        ]
+        .iter()
+        .filter(|x| **x)
+        .count();
+        if n > 1 {
+            return Err("give at most one of --bool, --cmd, --global-ref".into());
+        }
+        Ok(settings::ConditionDef {
+            global: a.global_ref.clone(),
+            bool: a.bool_value,
+            cmd: a.cmd.clone(),
+        })
+    };
+
+    // ---- mutations ----
+    if let Some(name) = args.add.clone().or(args.set.clone()) {
+        let adding = args.add.is_some();
+        if args.add.is_some() && args.set.is_some() {
+            return Err("--add and --set are mutually exclusive".into());
+        }
+        let mut def = source(&args)?;
+        if adding && def == settings::ConditionDef::default() {
+            // `--add NAME` with no source is a plain false flag.
+            def.bool = Some(false);
+        }
+
+        if args.global_file {
+            let mut g = settings::load_global().map_err(|e| e.to_string())?;
+            if adding && g.conditions.contains_key(&name) {
+                return Err(format!("global condition `{}` already exists", name));
+            }
+            if !adding && !g.conditions.contains_key(&name) {
+                return Err(format!("no global condition `{}` (use --add)", name));
+            }
+            if !adding {
+                if def == settings::ConditionDef::default() {
+                    return Err("--set needs one of --bool, --cmd, --global-ref".into());
+                }
+                if def.global.is_some() {
+                    return Err("global conditions cannot reference another global".into());
+                }
+            }
+            g.conditions.insert(name.clone(), def);
+            let p = settings::save_global(&g).map_err(|e| e.to_string())?;
+            println!(
+                "{} global condition `{}` in {}",
+                if adding { "Added" } else { "Updated" },
+                name,
+                p.display()
+            );
+            return Ok(());
+        }
+
+        let mut cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
+        if adding && cfg.conditions.contains_key(&name) {
+            return Err(format!("condition `{}` already exists", name));
+        }
+        if !adding {
+            if !cfg.conditions.contains_key(&name) {
+                return Err(format!("no condition `{}` (use --add)", name));
+            }
+            if def == settings::ConditionDef::default() {
+                return Err("--set needs one of --bool, --cmd, --global-ref".into());
+            }
+        }
+        cfg.conditions.insert(name.clone(), def);
+        settings::save(&cfg, project_root).map_err(|e| e.to_string())?;
+        println!(
+            "{} condition `{}`",
+            if adding { "Added" } else { "Updated" },
+            name
+        );
+        return Ok(());
+    }
+
+    if let Some(name) = args.remove {
+        if args.global_file {
+            let mut g = settings::load_global().map_err(|e| e.to_string())?;
+            if g.conditions.remove(&name).is_none() {
+                return Err(format!("no global condition `{}`", name));
+            }
+            settings::save_global(&g).map_err(|e| e.to_string())?;
+        } else {
+            let mut cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
+            if cfg.conditions.remove(&name).is_none() {
+                return Err(format!("no condition `{}`", name));
+            }
+            settings::save(&cfg, project_root).map_err(|e| e.to_string())?;
+        }
+        println!("Removed condition `{}`", name);
+        return Ok(());
+    }
+
+    // ---- read-only views: --hooks, --list (default) ----
+    // No build is happening, so there is no build environment to hand the probes —
+    // a `cmd` that reads VERTION_* sees it empty here, which is the honest answer.
+    let cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
+    let global = settings::load_global().map_err(|e| e.to_string())?;
+    let resolved = conditions::resolve_all(
+        &cfg.conditions,
+        &global,
+        project_root,
+        &runner::BuildEnv::default(),
+    );
+
+    if args.hooks {
+        // Only the command-backed ones — definitions whose resolution ran a shell command.
+        let hooks: Vec<_> = resolved
+            .iter()
+            .filter(|(_, r)| r.source.contains("cmd: "))
+            .collect();
+        if hooks.is_empty() {
+            println!("(no command-backed conditions)");
+            return Ok(());
+        }
+        for (name, r) in hooks {
+            println!("{:<24} {:<6} {}", name, r.value, r.source);
+        }
+        return Ok(());
+    }
+
+    let _ = args.list; // listing is also the default when no action flag is given
+    if resolved.is_empty() {
+        println!("(no conditions defined)");
+        println!(
+            "global config: {}",
+            settings::global_config_path().display()
+        );
+        return Ok(());
+    }
+    for (name, r) in &resolved {
+        println!("{:<24} {:<6} {}", name, r.value, r.source);
+    }
+    Ok(())
+}
+
+/// Split post-build commands into the two lists and their working directories:
+/// `(run_in_output, run_in_invocation_dir)`.
+///
+/// `run` / `--run` execute in the build output folder and `run_here` executes
+/// in the directory vertion was invoked from, so one profile can mix both. The
+/// `--run-here` flag is a blanket override that moves the output list across
+/// for a single invocation.
+fn resolve_run_lists(
+    args: &BuildArgs,
+    resolved: &crate::settings::ResolvedSettings,
+) -> (Vec<String>, Vec<String>) {
+    let out = runner::resolve_run_commands(&args.run, &resolved.run);
+    let mut here = resolved.run_here.clone();
+    if args.run_here {
+        here.splice(0..0, out);
+        return (Vec::new(), here);
+    }
+    (out, here)
+}
+
+/// Resolve every condition (project + global) into the `(name, value)` pairs
+/// the parser consumes. Command-backed conditions run here, once per build, with
+/// the build's `VERTION_*` environment applied (empty outside a build).
+fn resolve_condition_pairs(
+    cfg: &VertionConfig,
+    project_root: &Path,
+    env: &runner::BuildEnv,
+) -> Result<Vec<(String, bool)>, String> {
+    let global = settings::load_global().map_err(|e| e.to_string())?;
+    let resolved = conditions::resolve_all(&cfg.conditions, &global, project_root, env);
+    Ok(conditions::to_pairs(&resolved))
+}
+
+/// The `VERTION_*` environment for a build. `output` is a *prediction* — under
+/// `--dev` the real folder carries a `Local::now()` stamp, so callers must
+/// re-point it with `BuildEnv::with_output` once the build has run.
+#[allow(clippy::too_many_arguments)]
+fn build_environment(
+    project_root: &Path,
+    input: &Path,
+    output_root: &Path,
+    filter: &FilterMode,
+    profile: Option<&str>,
+    tags: &[String],
+    dev: bool,
+) -> runner::BuildEnv {
+    let predicted = builder::compute_output_dir(output_root, filter, dev);
+    let version = filter.upper().to_string();
+    runner::BuildEnv::new(&runner::BuildFacts {
+        root: project_root,
+        input,
+        output: &predicted,
+        version: &version,
+        mode: filter.name(),
+        profile,
+        tags,
+        dev,
+    })
 }
 
 // ---------- Wrap + path safety helpers ----------

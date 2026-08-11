@@ -18,10 +18,12 @@ class AutoCloseProvider implements vscode.OnTypeFormattingEditProvider {
         const prevLineText = document.lineAt(prevLineIndex).text;
         const kind = detectMarker(prevLineText, style);
 
-        // Only fire for versioned-with-star or ALL openers.
+        // Only fire for versioned-with-star, ALL / EXC, or tag-only openers.
         const fires =
             (kind.kind === "Versioned" && kind.marker.hasStar) ||
-            kind.kind === "All";
+            kind.kind === "All" ||
+            kind.kind === "Exclude" ||
+            kind.kind === "TagOnly";
         if (!fires) return [];
 
         // Skip if this marker is already paired (it's either a close or an

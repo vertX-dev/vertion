@@ -14,20 +14,31 @@ export interface MarkerSpan {
     text: string;
 }
 
+/** One condition on a marker tag: `{cond}`, or negated `{!cond}`. */
+export interface MarkerCondition {
+    name: string;
+    negated: boolean;
+}
+
 export interface Marker {
+    /** Empty for tag-only markers (`//version [wiki]`), which carry no version. */
     version: string;
     /** Upper bound for range markers; null for single-version or ALL. */
     to: string | null;
     tags: string[];
+    /** Conditions attached to this marker's tags (`[stable{a}{!b}]`). */
+    conditions: MarkerCondition[];
     hasStar: boolean;
     /** Sub-token spans on the original line — used by rename + highlight. */
     versionSpan: MarkerSpan;
     toSpan: MarkerSpan | null;
     tagSpans: MarkerSpan[];
+    /** Spans of the condition names inside `{...}`, for rename/highlight. */
+    conditionSpans: MarkerSpan[];
     starSpan: MarkerSpan | null;
 }
 
-export type MarkerKind = { kind: 'Versioned'; marker: Marker } | { kind: 'All'; marker: Marker } | { kind: 'InlineRange'; marker: Marker } | { kind: 'Malformed'; reason: string } | { kind: 'None' };
+export type MarkerKind = { kind: 'Versioned'; marker: Marker } | { kind: 'All'; marker: Marker } | { kind: 'Exclude'; marker: Marker } | { kind: 'TagOnly'; marker: Marker } | { kind: 'InlineRange'; marker: Marker } | { kind: 'Malformed'; reason: string } | { kind: 'None' };
 
 const KEYWORD = 'version';
 
@@ -39,7 +50,7 @@ const KEYWORD = 'version';
  *
  *   `version` <ws> <v1> [<ws> <v2>] [<ws> `[tag1,tag2,...]`] [<ws> `*`] <ws>*
  *
- * - `<v1>` is `ALL` (case-insensitive) or a parseable version.
+ * - `<v1>` is `ALL` / `EXC` (case-insensitive) or a parseable version.
  * - `<v2>` is an optional upper bound (only valid when `<v1>` is a version).
  *   - With `*`: range block (open/close paired by stack).
  *   - Without `*`: inline range (applies to the next line only).
@@ -64,35 +75,42 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
 
     // 4. Require whitespace or EOL right after the keyword.
     if (cursor >= line.length) {
-        return malformed('missing version or `ALL` after `version`');
+        return malformed('missing version, `ALL`/`EXC`, or `[tags]` after `version`');
     }
     if (!isWhitespace(line.charAt(cursor))) {
         return { kind: 'None' };
     }
     cursor = skipWhitespace(line, cursor);
     if (cursor >= line.length) {
-        return malformed('missing version or `ALL` after `version`');
+        return malformed('missing version, `ALL`/`EXC`, or `[tags]` after `version`');
     }
 
-    // 5. First token: ALL or a version. Ends at next whitespace or `[`.
-    const tokenStart = cursor;
-    cursor = findTokenEnd(line, cursor);
-    const versionToken = line.slice(tokenStart, cursor);
-    const versionSpan: MarkerSpan = {
-        start: tokenStart,
-        end: cursor,
-        text: versionToken,
-    };
-    cursor = skipWhitespace(line, cursor);
+    // 5. First token: ALL, EXC, or a version — omitted entirely for tag-only
+    //    markers, where a `[tag]` list follows the keyword directly.
+    const tagOnly = line.charAt(cursor) === '[';
+    let versionToken = '';
+    let versionSpan: MarkerSpan = { start: cursor, end: cursor, text: '' };
+    let isAll = false;
+    let isExc = false;
+    if (!tagOnly) {
+        const tokenStart = cursor;
+        cursor = findTokenEnd(line, cursor);
+        versionToken = line.slice(tokenStart, cursor);
+        versionSpan = { start: tokenStart, end: cursor, text: versionToken };
+        cursor = skipWhitespace(line, cursor);
 
-    const isAll = versionToken.toUpperCase() === 'ALL';
-    if (!isAll && !isValidVersion(versionToken)) {
-        return malformed(`unparseable version \`${versionToken}\``);
+        const upper = versionToken.toUpperCase();
+        isAll = upper === 'ALL';
+        isExc = upper === 'EXC';
+        if (!isAll && !isExc && !isValidVersion(versionToken)) {
+            return malformed(`unparseable version \`${versionToken}\``);
+        }
     }
+    const isKeyword = isAll || isExc;
 
-    // 6. Optional second version token (`to`) — only for non-ALL.
+    // 6. Optional second version token (`to`) — only for a real version (not ALL/EXC/tag-only).
     let toSpan: MarkerSpan | null = null;
-    if (!isAll && cursor < line.length && line.charAt(cursor) !== '[' && line.charAt(cursor) !== '*') {
+    if (!tagOnly && !isKeyword && cursor < line.length && line.charAt(cursor) !== '[' && line.charAt(cursor) !== '*') {
         const nextStart = cursor;
         const nextEnd = findTokenEnd(line, cursor);
         const nextToken = line.slice(nextStart, nextEnd);
@@ -105,8 +123,10 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
         }
     }
 
-    // 7. Optional [tags].
+    // 7. Optional [tags], each optionally carrying a `{condition}`.
     const tagSpans: MarkerSpan[] = [];
+    const conditionSpans: MarkerSpan[] = [];
+    const conditionList: MarkerCondition[] = [];
     if (cursor < line.length && line.charAt(cursor) === '[') {
         const openBracket = cursor;
         const closeBracket = line.indexOf(']', openBracket + 1);
@@ -124,11 +144,16 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
             if (trimmed.length === 0) {
                 return malformed('empty tag in list');
             }
-            tagSpans.push({
-                start: tagSearch + lead,
-                end: commaOrEnd - trail,
-                text: trimmed,
-            });
+            const entryStart = tagSearch + lead;
+            const parsed = parseTagEntry(trimmed, entryStart);
+            if ('error' in parsed) {
+                return malformed(parsed.error);
+            }
+            tagSpans.push(parsed.tag);
+            for (const c of parsed.conditions) {
+                conditionSpans.push(c.span);
+                conditionList.push({ name: c.span.text, negated: c.negated });
+            }
             tagSearch = commaOrEnd + 1; // step past the comma
         }
         cursor = skipWhitespace(line, closeBracket + 1);
@@ -161,14 +186,22 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
         version: versionToken,
         to: toSpan ? toSpan.text : null,
         tags: tagSpans.map((t) => t.text),
+        conditions: conditionList,
         hasStar,
         versionSpan,
         toSpan,
         tagSpans,
+        conditionSpans,
         starSpan,
     };
+    if (tagOnly) {
+        return { kind: 'TagOnly', marker };
+    }
     if (isAll) {
         return { kind: 'All', marker };
+    }
+    if (isExc) {
+        return { kind: 'Exclude', marker };
     }
     if (marker.to !== null && !hasStar) {
         return { kind: 'InlineRange', marker };
@@ -178,6 +211,67 @@ export function detectMarker(line: string, style: CommentStyle): MarkerKind {
 
 function malformed(reason: string): MarkerKind {
     return { kind: 'Malformed', reason };
+}
+
+interface ParsedTagEntry {
+    tag: MarkerSpan;
+    conditions: { span: MarkerSpan; negated: boolean }[];
+}
+
+/**
+ * Parse one `[tag]` entry: a tag name followed by zero or more `{[!]condition}`
+ * groups — `stable`, `stable{a}`, `stable{a}{!b}`.
+ *
+ * Mirrors `parse_tag_entry` in `src/parser.rs`. `entryStart` is the column of
+ * `entry[0]` on the original line, so returned spans are absolute.
+ */
+function parseTagEntry(entry: string, entryStart: number): ParsedTagEntry | { error: string } {
+    const brace = entry.indexOf('{');
+    const rawName = brace >= 0 ? entry.slice(0, brace) : entry;
+    const name = rawName.trim();
+    if (name.length === 0) {
+        return { error: 'missing tag name before `{`' };
+    }
+    if (name.includes('}')) {
+        return { error: `stray \`}\` in tag \`${name}\` (conditions are written \`tag{name}\`)` };
+    }
+    const nameOffset = rawName.indexOf(name);
+    const tag: MarkerSpan = {
+        start: entryStart + nameOffset,
+        end: entryStart + nameOffset + name.length,
+        text: name,
+    };
+
+    const conditions: { span: MarkerSpan; negated: boolean }[] = [];
+    let i = brace >= 0 ? brace : entry.length;
+    while (i < entry.length) {
+        while (i < entry.length && isWhitespace(entry.charAt(i))) i++;
+        if (i >= entry.length) break;
+        if (entry.charAt(i) !== '{') {
+            return { error: `unexpected \`${entry.slice(i).trim()}\` after conditions on tag \`${name}\`` };
+        }
+        const close = entry.indexOf('}', i + 1);
+        if (close < 0) {
+            return { error: `unterminated \`{\` condition on tag \`${name}\`` };
+        }
+        const body = entry.slice(i + 1, close);
+        const trimmedBody = body.trim();
+        const negated = trimmedBody.startsWith('!');
+        const condName = (negated ? trimmedBody.slice(1) : trimmedBody).trim();
+        if (condName.length === 0) {
+            return { error: `empty condition name on tag \`${name}\`` };
+        }
+        if (condName.includes('!') || condName.includes('{') || condName.includes('}')) {
+            return { error: `invalid condition name \`${condName}\` on tag \`${name}\`` };
+        }
+        const condStart = entryStart + i + 1 + body.indexOf(condName);
+        conditions.push({
+            span: { start: condStart, end: condStart + condName.length, text: condName },
+            negated,
+        });
+        i = close + 1;
+    }
+    return { tag, conditions };
 }
 
 function isWhitespace(ch: string): boolean {
@@ -200,7 +294,8 @@ function findTokenEnd(s: string, from: number): number {
     let i = from;
     while (i < s.length) {
         const c = s.charAt(i);
-        if (isWhitespace(c) || c === '[') return i;
+        // `*` terminates the token too, so `//version 1.2*` (no space) parses.
+        if (isWhitespace(c) || c === '[' || c === '*') return i;
         i++;
     }
     return i;
@@ -308,7 +403,13 @@ function comparePreRelease(a: string, b: string): number {
 // pair when their (version, to) tuples are equal. ALL pairs on the literal
 // "ALL" (case-insensitive).
 
-export function markerPairKey(marker: Marker, kind: 'Versioned' | 'All'): string {
+export function markerPairKey(marker: Marker, kind: 'Versioned' | 'All' | 'Exclude' | 'TagOnly'): string {
+    if (kind === 'Exclude') return 'EXC';
     if (kind === 'All') return 'ALL';
+    // Tag-only markers have no version, so they pair on their tag+condition list.
+    if (kind === 'TagOnly') {
+        const conds = marker.conditions.map((c) => (c.negated ? `!${c.name}` : c.name)).join(',');
+        return `T:${marker.tags.join(',')}|${conds}`;
+    }
     return `V:${marker.version} ${marker.to ?? ''}`;
 }

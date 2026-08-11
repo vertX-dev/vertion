@@ -16,7 +16,7 @@
       "patterns": [
         {
           "name": "constant.language.vertion",
-          "match": "(?i)\\bALL\\b"
+          "match": "(?i)\\b(?:ALL|EXC)\\b"
         },
         {
           "name": "constant.numeric.version.vertion",
@@ -37,8 +37,28 @@
               "match": ","
             },
             {
+              "begin": "\\{",
+              "beginCaptures": {
+                "0": { "name": "punctuation.definition.vertion" }
+              },
+              "end": "\\}",
+              "endCaptures": {
+                "0": { "name": "punctuation.definition.vertion" }
+              },
+              "patterns": [
+                {
+                  "name": "keyword.operator.vertion",
+                  "match": "!"
+                },
+                {
+                  "name": "entity.name.function.vertion",
+                  "match": "[^}!]+"
+                }
+              ]
+            },
+            {
               "name": "entity.name.tag.vertion",
-              "match": "[^,\\]]+"
+              "match": "[^,{}\\]]+"
             }
           ]
         },

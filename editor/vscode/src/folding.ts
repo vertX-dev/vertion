@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { commentStyleFor } from "./extension";
-import { pairDocument } from "./pairing";
+import { pairDocument, foldRangesFromPairs } from "./pairing";
 
 class FoldingProvider implements vscode.FoldingRangeProvider {
     provideFoldingRanges(
@@ -10,18 +10,14 @@ class FoldingProvider implements vscode.FoldingRangeProvider {
     ): vscode.FoldingRange[] {
         const style = commentStyleFor(document.languageId);
         const pairing = pairDocument(document, style);
-        const ranges: vscode.FoldingRange[] = [];
-        for (const p of pairing.pairs) {
-            if (p.closeLine <= p.openLine + 1) continue;
-            ranges.push(
+        return foldRangesFromPairs(pairing.pairs).map(
+            (r) =>
                 new vscode.FoldingRange(
-                    p.openLine,
-                    p.closeLine - 1,
+                    r.start,
+                    r.end,
                     vscode.FoldingRangeKind.Region,
                 ),
-            );
-        }
-        return ranges;
+        );
     }
 }
 

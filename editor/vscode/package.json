@@ -1,230 +1,302 @@
 {
-    "name": "vertion",
-    "displayName": "Vertion",
-    "description": "Syntax highlighting, auto-close, rename pair, folding, and snippets for Vertion version markers.",
-    "version": "0.2.0",
-    "publisher": "vertx-dev",
-    "license": "MIT",
-    "engines": {
-        "vscode": "^1.84.0"
-    },
-    "repository": {
-        "type": "git",
-        "url": "https://github.com/vertX-dev/vertion.git"
-    },
-    "categories": [
-        "Programming Languages",
-        "Snippets",
-        "Other"
+  "name": "vertion",
+  "displayName": "Vertion",
+  "description": "Syntax highlighting, auto-close, rename pair, folding, and snippets for Vertion version markers.",
+  "version": "0.7.0",
+  "publisher": "vertx-dev",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.84.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vertX-dev/vertion.git"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets",
+    "Other"
+  ],
+  "keywords": [
+    "vertion",
+    "versioning",
+    "preprocessor",
+    "marker"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:javascript",
+    "onLanguage:javascriptreact",
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onLanguage:rust",
+    "onLanguage:c",
+    "onLanguage:cpp",
+    "onLanguage:java",
+    "onLanguage:csharp",
+    "onLanguage:go",
+    "onLanguage:kotlin",
+    "onLanguage:swift",
+    "onLanguage:scala",
+    "onLanguage:php",
+    "onLanguage:python",
+    "onLanguage:shellscript",
+    "onLanguage:ruby",
+    "onLanguage:yaml",
+    "onLanguage:toml",
+    "onLanguage:perl",
+    "onLanguage:r"
+  ],
+  "contributes": {
+    "grammars": [
+      {
+        "path": "./syntaxes/vertion-injection.tmLanguage.json",
+        "scopeName": "vertion.injection",
+        "injectTo": [
+          "source.js",
+          "source.js.jsx",
+          "source.jsx",
+          "source.ts",
+          "source.tsx",
+          "source.rust",
+          "source.c",
+          "source.cpp",
+          "source.java",
+          "source.cs",
+          "source.go",
+          "source.kotlin",
+          "source.swift",
+          "source.scala",
+          "source.php",
+          "source.python",
+          "source.shell",
+          "source.ruby",
+          "source.yaml",
+          "source.toml",
+          "source.perl",
+          "source.r"
+        ]
+      }
     ],
-    "keywords": [
-        "vertion",
-        "versioning",
-        "preprocessor",
-        "marker"
+    "snippets": [
+      {
+        "language": "javascript",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "javascriptreact",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "typescript",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "typescriptreact",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "rust",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "c",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "cpp",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "java",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "csharp",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "go",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "kotlin",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "swift",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "scala",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "php",
+        "path": "./snippets/vertion-slash.code-snippets"
+      },
+      {
+        "language": "python",
+        "path": "./snippets/vertion-hash.code-snippets"
+      },
+      {
+        "language": "shellscript",
+        "path": "./snippets/vertion-hash.code-snippets"
+      },
+      {
+        "language": "ruby",
+        "path": "./snippets/vertion-hash.code-snippets"
+      },
+      {
+        "language": "yaml",
+        "path": "./snippets/vertion-hash.code-snippets"
+      },
+      {
+        "language": "toml",
+        "path": "./snippets/vertion-hash.code-snippets"
+      },
+      {
+        "language": "perl",
+        "path": "./snippets/vertion-hash.code-snippets"
+      },
+      {
+        "language": "r",
+        "path": "./snippets/vertion-hash.code-snippets"
+      }
     ],
-    "main": "./out/extension.js",
-    "activationEvents": [
-        "onLanguage:javascript",
-        "onLanguage:javascriptreact",
-        "onLanguage:typescript",
-        "onLanguage:typescriptreact",
-        "onLanguage:rust",
-        "onLanguage:c",
-        "onLanguage:cpp",
-        "onLanguage:java",
-        "onLanguage:csharp",
-        "onLanguage:go",
-        "onLanguage:kotlin",
-        "onLanguage:swift",
-        "onLanguage:scala",
-        "onLanguage:php",
-        "onLanguage:python",
-        "onLanguage:shellscript",
-        "onLanguage:ruby",
-        "onLanguage:yaml",
-        "onLanguage:toml",
-        "onLanguage:perl",
-        "onLanguage:r"
+    "commands": [
+      {
+        "command": "vertion.jumpToMatchingMarker",
+        "title": "Vertion: Jump to Matching Marker"
+      },
+      {
+        "command": "vertion.wrapSelectionInBlock",
+        "title": "Vertion: Wrap Selection in Version Block"
+      },
+      {
+        "command": "vertion.duplicateBlockWithVersion",
+        "title": "Vertion: Duplicate Block with New Version"
+      },
+      {
+        "command": "vertion.splitBlockByVersion",
+        "title": "Vertion: Split Block by Version"
+      },
+      {
+        "command": "vertion.convertToVariants",
+        "title": "Vertion: Convert to Versioned File/Folder"
+      },
+      {
+        "command": "vertion.addVariant",
+        "title": "Vertion: Add Variant..."
+      },
+      {
+        "command": "vertion.duplicateVariant",
+        "title": "Vertion: Duplicate as New Version..."
+      },
+      {
+        "command": "vertion.flattenVariants",
+        "title": "Vertion: Flatten to Plain File/Folder"
+      }
     ],
-    "contributes": {
-        "grammars": [
-            {
-                "path": "./syntaxes/vertion-injection.tmLanguage.json",
-                "scopeName": "vertion.injection",
-                "injectTo": [
-                    "source.js",
-                    "source.js.jsx",
-                    "source.jsx",
-                    "source.ts",
-                    "source.tsx",
-                    "source.rust",
-                    "source.c",
-                    "source.cpp",
-                    "source.java",
-                    "source.cs",
-                    "source.go",
-                    "source.kotlin",
-                    "source.swift",
-                    "source.scala",
-                    "source.php",
-                    "source.python",
-                    "source.shell",
-                    "source.ruby",
-                    "source.yaml",
-                    "source.toml",
-                    "source.perl",
-                    "source.r"
-                ]
-            }
-        ],
-        "snippets": [
-            {
-                "language": "javascript",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "javascriptreact",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "typescript",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "typescriptreact",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "rust",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "c",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "cpp",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "java",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "csharp",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "go",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "kotlin",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "swift",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "scala",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "php",
-                "path": "./snippets/vertion-slash.code-snippets"
-            },
-            {
-                "language": "python",
-                "path": "./snippets/vertion-hash.code-snippets"
-            },
-            {
-                "language": "shellscript",
-                "path": "./snippets/vertion-hash.code-snippets"
-            },
-            {
-                "language": "ruby",
-                "path": "./snippets/vertion-hash.code-snippets"
-            },
-            {
-                "language": "yaml",
-                "path": "./snippets/vertion-hash.code-snippets"
-            },
-            {
-                "language": "toml",
-                "path": "./snippets/vertion-hash.code-snippets"
-            },
-            {
-                "language": "perl",
-                "path": "./snippets/vertion-hash.code-snippets"
-            },
-            {
-                "language": "r",
-                "path": "./snippets/vertion-hash.code-snippets"
-            }
-        ],
-        "commands": [
-            {
-                "command": "vertion.jumpToMatchingMarker",
-                "title": "Vertion: Jump to Matching Marker"
-            },
-            {
-                "command": "vertion.wrapSelectionInBlock",
-                "title": "Vertion: Wrap Selection in Version Block"
-            }
-        ],
-        "keybindings": [
-            {
-                "command": "vertion.jumpToMatchingMarker",
-                "key": "ctrl+k ctrl+m",
-                "mac": "cmd+k cmd+m",
-                "when": "editorTextFocus"
-            },
-            {
-                "command": "vertion.wrapSelectionInBlock",
-                "key": "ctrl+k ctrl+v",
-                "mac": "cmd+k cmd+v",
-                "when": "editorTextFocus && editorHasSelection"
-            }
-        ],
-        "configuration": {
-            "title": "Vertion",
-            "properties": {
-                "vertion.highlight.enabled": {
-                    "type": "boolean",
-                    "default": true,
-                    "description": "Highlight matching marker pairs when the cursor is on one."
-                },
-                "vertion.highlight.backgroundColor": {
-                    "type": "string",
-                    "default": "#3a8bff33",
-                    "description": "Background color (any valid CSS color: hex, rgba(), or theme color reference like 'editor.wordHighlightBackground') applied to both lines of a matched marker pair."
-                },
-                "vertion.highlight.borderColor": {
-                    "type": "string",
-                    "default": "#3a8bffaa",
-                    "description": "Border color (any valid CSS color) applied to both lines of a matched marker pair. Set to an empty string to hide the border."
-                },
-                "vertion.highlight.borderWidth": {
-                    "type": "string",
-                    "default": "1px",
-                    "description": "CSS border width applied to both lines of a matched marker pair (e.g. '0', '1px', '2px solid')."
-                }
-            }
+    "keybindings": [
+      {
+        "command": "vertion.jumpToMatchingMarker",
+        "key": "ctrl+k ctrl+m",
+        "mac": "cmd+k cmd+m",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "vertion.wrapSelectionInBlock",
+        "key": "ctrl+k ctrl+v",
+        "mac": "cmd+k cmd+v",
+        "when": "editorTextFocus && editorHasSelection"
+      },
+      {
+        "command": "vertion.duplicateBlockWithVersion",
+        "key": "ctrl+k ctrl+d",
+        "mac": "cmd+k cmd+d",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "vertion.splitBlockByVersion",
+        "key": "ctrl+k ctrl+p",
+        "mac": "cmd+k cmd+p",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "title": "Vertion",
+      "properties": {
+        "vertion.highlight.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Highlight matching marker pairs when the cursor is on one."
+        },
+        "vertion.highlight.backgroundColor": {
+          "type": "string",
+          "default": "#3a8bff33",
+          "description": "Background color (any valid CSS color: hex, rgba(), or theme color reference like 'editor.wordHighlightBackground') applied to both lines of a matched marker pair."
+        },
+        "vertion.highlight.borderColor": {
+          "type": "string",
+          "default": "#3a8bffaa",
+          "description": "Border color (any valid CSS color) applied to both lines of a matched marker pair. Set to an empty string to hide the border."
+        },
+        "vertion.highlight.borderWidth": {
+          "type": "string",
+          "default": "1px",
+          "description": "CSS border width applied to both lines of a matched marker pair (e.g. '0', '1px', '2px solid')."
         }
+      }
     },
-    "scripts": {
-        "compile": "tsc -p .",
-        "watch": "tsc -p . --watch",
-        "test": "vitest run",
-        "package": "vsce package"
-    },
-    "devDependencies": {
-        "@types/node": "^20.11.0",
-        "@types/vscode": "^1.84.0",
-        "@vscode/vsce": "^2.24.0",
-        "typescript": "^5.4.0",
-        "vitest": "^1.6.0"
+    "submenus": [
+      {
+        "id": "vertion.explorer",
+        "label": "Vertion"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "submenu": "vertion.explorer",
+          "group": "7_modification"
+        }
+      ],
+      "vertion.explorer": [
+        {
+          "command": "vertion.convertToVariants",
+          "when": "!(resourcePath =~ /\\.vertion\\./)",
+          "group": "1_create"
+        },
+        {
+          "command": "vertion.addVariant",
+          "when": "resourcePath =~ /\\.vertion\\./",
+          "group": "1_create"
+        },
+        {
+          "command": "vertion.duplicateVariant",
+          "when": "resourcePath =~ /\\.vertion\\./",
+          "group": "1_create"
+        },
+        {
+          "command": "vertion.flattenVariants",
+          "when": "explorerResourceIsFolder && resourceFilename =~ /^\\.vertion\\./",
+          "group": "2_destructive"
+        }
+      ]
     }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -p . --watch",
+    "test": "vitest run",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.84.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0"
+  }
 }

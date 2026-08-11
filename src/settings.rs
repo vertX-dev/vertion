@@ -3,11 +3,84 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
 use crate::filter::{parse_version, FilterMode, IncludeEntry, IncrementLevel};
+use crate::parser::{parse_condition_token, MarkerCondition};
 
-pub const DEFAULT_CONFIG_NAME: &str = "vertion.toml";
+pub const DEFAULT_CONFIG_NAME: &str = "vertion.cfg";
+/// Older config name, still read (and written back to) if present so existing
+/// projects don't break on upgrade.
+pub const LEGACY_CONFIG_NAME: &str = "vertion.toml";
+
+/// A named condition. Normally exactly one source is set; when several are,
+/// precedence is `cmd` > `global` > `bool` (see `conditions::resolve_one`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConditionDef {
+    /// Name of a condition in the global (user-level) config to defer to.
+    /// If that global condition doesn't exist, falls back to `bool`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub global: Option<String>,
+    /// Literal value. The fallback when no `cmd`/`global` applies. Defaults to false.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bool: Option<bool>,
+    /// Shell command; exit status 0 means true. Empty string counts as unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cmd: Option<String>,
+}
+
+/// User-level config (`~/.vertion/vertion.cfg`, or `$VERTION_GLOBAL_CONFIG`).
+/// Only holds conditions today.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GlobalConfig {
+    #[serde(default)]
+    pub conditions: BTreeMap<String, ConditionDef>,
+}
+
+/// Path of the user-level global config. `$VERTION_GLOBAL_CONFIG` overrides it
+/// (also what the tests use so they never touch a real home directory).
+pub fn global_config_path() -> PathBuf {
+    if let Some(p) = std::env::var_os("VERTION_GLOBAL_CONFIG") {
+        return PathBuf::from(p);
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    home.join(".vertion").join(DEFAULT_CONFIG_NAME)
+}
+
+pub fn load_global() -> Result<GlobalConfig, SettingsError> {
+    let p = global_config_path();
+    if !p.exists() {
+        return Ok(GlobalConfig::default());
+    }
+    let text = fs::read_to_string(&p)?;
+    Ok(toml::from_str(&text)?)
+}
+
+pub fn save_global(cfg: &GlobalConfig) -> Result<PathBuf, SettingsError> {
+    let p = global_config_path();
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let text = toml::to_string_pretty(cfg)?;
+    fs::write(&p, text)?;
+    Ok(p)
+}
+
+/// Whole-file version assignment: a concrete version (with optional tags), or
+/// `EXC` (always exclude — tags are irrelevant).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileVersionSpec {
+    At {
+        version: Version,
+        tags: Vec<String>,
+        conditions: Vec<MarkerCondition>,
+    },
+    Exclude,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VertionConfig {
@@ -20,6 +93,34 @@ pub struct VertionConfig {
     pub profiles: BTreeMap<String, ProfileSection>,
     #[serde(default, rename = "include")]
     pub include: Vec<IncludeEntryConfig>,
+    /// Whole-file version assignments for files that can't carry comment markers
+    /// (images, JSON, binaries). A file is excluded from the build when its
+    /// assigned version fails the active filter; otherwise it copies as-is.
+    #[serde(default, rename = "files")]
+    pub files: Vec<FileVersion>,
+    /// Named conditions referenced by `{name}` on marker tags.
+    #[serde(default)]
+    pub conditions: BTreeMap<String, ConditionDef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FileVersion {
+    /// Path relative to the input directory (forward slashes; leading `./` optional).
+    pub path: String,
+    pub version: String,
+    /// Optional tags, filtered the same way as in-code block tags (`--tag`, OR-logic).
+    /// Ignored for `version = "EXC"`.
+    #[serde(default)]
+    pub tags: Vec<String>,
+    /// Optional conditions, gating the file the same way `{cond}` gates a marker.
+    /// Prefix a name with `!` to negate it. Ignored for `version = "EXC"`.
+    #[serde(default)]
+    pub conditions: Vec<String>,
+}
+
+/// Normalize a path for matching: forward slashes, no leading `./`.
+pub fn normalize_path_key(s: &str) -> String {
+    s.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -51,12 +152,27 @@ pub struct ProjectSection {
     pub output: PathBuf,
     #[serde(default)]
     pub ignore: Vec<PathBuf>,
+    /// Tags active when neither `--tag` nor a profile's `tags` is given.
+    /// Empty means no tags are active, so all tagged code and files are skipped.
+    /// Use `["*"]` to admit every tag.
+    #[serde(default)]
+    pub default_tags: Vec<String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildSection {
     #[serde(default = "default_increment")]
     pub increment: String,
+}
+
+// Manual Default so a config omitting the entire `[build]` table still gets the
+// documented "minor" increment (a derived Default would leave it as "").
+impl Default for BuildSection {
+    fn default() -> Self {
+        BuildSection {
+            increment: default_increment(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -89,8 +205,16 @@ pub struct ProfileSection {
     #[serde(default)]
     pub ignore: Vec<PathBuf>,
     pub increment: Option<String>,
+    /// Post-build commands executed **in the build output folder**.
     #[serde(default)]
     pub run: Vec<String>,
+    /// Post-build commands executed **in the directory vertion was invoked from**.
+    /// Runs after `run`.
+    #[serde(default)]
+    pub run_here: Vec<String>,
+    /// Default tag filter for builds using this profile (CLI `--tag` replaces it when given).
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Wrap mode: "temp" or "perm". `None` disables wrap.
     pub wrap: Option<String>,
     /// Wrap folder name. Defaults to `.vertion_wrap`.
@@ -115,6 +239,7 @@ impl VertionConfig {
                 input: default_input(),
                 output: default_output(),
                 ignore: vec![PathBuf::from("./build"), PathBuf::from("./node_modules")],
+                default_tags: Vec::new(),
             },
             build: BuildSection {
                 increment: default_increment(),
@@ -122,6 +247,8 @@ impl VertionConfig {
             last: LastSection::default(),
             profiles: BTreeMap::new(),
             include: Vec::new(),
+            files: Vec::new(),
+            conditions: BTreeMap::new(),
         }
     }
 
@@ -138,12 +265,15 @@ impl VertionConfig {
         let mut ignore = self.project.ignore.clone();
         let mut increment = self.build.increment.clone();
         let mut run: Vec<String> = Vec::new();
+        let mut run_here: Vec<String> = Vec::new();
+        // Project-level default; a profile's own `tags` replaces it when set.
+        let mut tags: Vec<String> = self.project.default_tags.clone();
         let mut wrap: Option<String> = None;
         let mut wrap_name: Option<String> = None;
 
         if let Some(n) = name {
             let prof = self.profiles.get(n).ok_or_else(|| {
-                SettingsError(format!("profile `{}` not found in vertion.toml", n))
+                SettingsError(format!("profile `{}` not found in vertion.cfg", n))
             })?;
             if let Some(p) = &prof.input {
                 input = p.clone();
@@ -164,6 +294,8 @@ impl VertionConfig {
                 increment = i.clone();
             }
             run = prof.run.clone();
+            run_here = prof.run_here.clone();
+            tags = prof.tags.clone();
             wrap = prof.wrap.clone();
             wrap_name = prof.wrap_name.clone();
         }
@@ -181,6 +313,8 @@ impl VertionConfig {
             increment: IncrementLevel::parse(&increment).unwrap(),
             profile: name.map(|s| s.to_string()),
             run,
+            run_here,
+            tags,
             wrap,
             wrap_name,
         })
@@ -189,6 +323,31 @@ impl VertionConfig {
     /// Parse the persisted include list into runtime entries.
     pub fn include_entries(&self) -> Result<Vec<IncludeEntry>, SettingsError> {
         self.include.iter().map(|c| c.parse()).collect()
+    }
+
+    /// Parse `[[files]]` into `(normalized_path, spec)` pairs.
+    pub fn file_versions(&self) -> Result<Vec<(String, FileVersionSpec)>, SettingsError> {
+        self.files
+            .iter()
+            .map(|f| {
+                let spec = if f.version.eq_ignore_ascii_case("EXC") {
+                    FileVersionSpec::Exclude
+                } else {
+                    let conditions = f
+                        .conditions
+                        .iter()
+                        .map(|c| parse_condition_token(c).map_err(SettingsError))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    FileVersionSpec::At {
+                        version: parse_version(&f.version)
+                            .map_err(|e| SettingsError(e.to_string()))?,
+                        tags: f.tags.clone(),
+                        conditions,
+                    }
+                };
+                Ok((normalize_path_key(&f.path), spec))
+            })
+            .collect()
     }
 }
 
@@ -199,6 +358,8 @@ pub struct ResolvedSettings {
     pub increment: IncrementLevel,
     pub profile: Option<String>,
     pub run: Vec<String>,
+    pub run_here: Vec<String>,
+    pub tags: Vec<String>,
     pub wrap: Option<String>,
     pub wrap_name: Option<String>,
 }
@@ -228,12 +389,27 @@ impl From<toml::ser::Error> for SettingsError {
     }
 }
 
+/// Where a new config is written.
 pub fn config_path(project_root: &Path) -> PathBuf {
     project_root.join(DEFAULT_CONFIG_NAME)
 }
 
+/// The config file to read/write: `.cfg` if present, else legacy `.toml` if
+/// present, else the default `.cfg` path (for creation).
+pub fn active_config_path(project_root: &Path) -> PathBuf {
+    let cfg = config_path(project_root);
+    if cfg.exists() {
+        return cfg;
+    }
+    let legacy = project_root.join(LEGACY_CONFIG_NAME);
+    if legacy.exists() {
+        return legacy;
+    }
+    cfg
+}
+
 pub fn load_or_default(project_root: &Path) -> Result<VertionConfig, SettingsError> {
-    let p = config_path(project_root);
+    let p = active_config_path(project_root);
     if !p.exists() {
         return Ok(VertionConfig::default_template());
     }
@@ -244,7 +420,7 @@ pub fn load_or_default(project_root: &Path) -> Result<VertionConfig, SettingsErr
 
 #[allow(dead_code)]
 pub fn load(project_root: &Path) -> Result<Option<VertionConfig>, SettingsError> {
-    let p = config_path(project_root);
+    let p = active_config_path(project_root);
     if !p.exists() {
         return Ok(None);
     }
@@ -255,15 +431,19 @@ pub fn load(project_root: &Path) -> Result<Option<VertionConfig>, SettingsError>
 
 pub fn save(cfg: &VertionConfig, project_root: &Path) -> Result<(), SettingsError> {
     let text = toml::to_string_pretty(cfg)?;
-    fs::write(config_path(project_root), text)?;
+    fs::write(active_config_path(project_root), text)?;
     Ok(())
 }
 
 pub fn write_default_template(project_root: &Path) -> Result<PathBuf, SettingsError> {
-    let p = config_path(project_root);
-    if p.exists() {
-        return Err(SettingsError(format!("{} already exists", p.display())));
+    let existing = active_config_path(project_root);
+    if existing.exists() {
+        return Err(SettingsError(format!(
+            "{} already exists",
+            existing.display()
+        )));
     }
+    let p = config_path(project_root);
     let cfg = VertionConfig::default_template();
     let body = toml::to_string_pretty(&cfg)?;
     let commented = format!(
@@ -357,6 +537,8 @@ mod tests {
                 ignore: vec![PathBuf::from("tests")],
                 increment: Some("minor".into()),
                 run: Vec::new(),
+                run_here: Vec::new(),
+                tags: Vec::new(),
                 wrap: None,
                 wrap_name: None,
             },
@@ -379,6 +561,25 @@ mod tests {
         assert_eq!(loaded.last.version, "1.2.0");
         assert!(loaded.last.dev);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_resolves_both_run_lists() {
+        let mut cfg = VertionConfig::default_template();
+        cfg.profiles.insert(
+            "prod".into(),
+            ProfileSection {
+                run: vec!["npm run build".into()],
+                run_here: vec!["git add build".into()],
+                ..Default::default()
+            },
+        );
+        let r = cfg.resolve_profile(Some("prod")).unwrap();
+        assert_eq!(r.run, vec!["npm run build".to_string()]);
+        assert_eq!(r.run_here, vec!["git add build".to_string()]);
+        // No profile → both empty.
+        let none = cfg.resolve_profile(None).unwrap();
+        assert!(none.run.is_empty() && none.run_here.is_empty());
     }
 
     #[test]

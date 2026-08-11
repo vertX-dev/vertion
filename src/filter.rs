@@ -210,17 +210,22 @@ pub fn parse_filter(args: &[String]) -> Result<FilterMode, FilterError> {
     }
 }
 
-/// Tag filter: OR-logic.
+/// Wildcard tag: admits every tagged block/file regardless of its tags.
+pub const TAG_WILDCARD: &str = "*";
+
+/// Tag filter: OR-logic, opt-in.
 ///
-/// - Empty filter → every block passes.
-/// - Untagged block → passes regardless of filter (tag filter only constrains
-///   blocks that actually carry tags).
+/// - Untagged block → always passes; tags only ever constrain tagged content.
+/// - `*` in the filter → every tagged block passes.
 /// - Tagged block → must share at least one tag (case-insensitive) with the filter.
+/// - Empty filter → **no tags are active**, so tagged content is skipped. The
+///   effective filter is `--tag`, else the profile's `tags`, else
+///   `[project].default_tags`.
 pub fn tag_passes(block_tags: &[String], tag_filter: &[String]) -> bool {
-    if tag_filter.is_empty() {
+    if block_tags.is_empty() {
         return true;
     }
-    if block_tags.is_empty() {
+    if tag_filter.iter().any(|f| f == TAG_WILDCARD) {
         return true;
     }
     block_tags
@@ -236,6 +241,10 @@ pub fn passes(
     mode: &FilterMode,
     tag_filter: &[String],
 ) -> bool {
+    // EXC blocks are excluded from every build, regardless of filter or tags.
+    if version_token.eq_ignore_ascii_case("EXC") {
+        return false;
+    }
     if version_token.eq_ignore_ascii_case("ALL") {
         return tag_passes(block_tags, tag_filter);
     }
@@ -469,6 +478,20 @@ mod tests {
         let f = FilterMode::Include(vec![a, b]);
         // build_upper = max(1.1, 1.8) = 1.8 → 1.3..2.0 covers 1.8.
         assert!(passes_range_marker("1.3", "2.0", &[], &f, &[]));
+    }
+
+    #[test]
+    fn exc_never_passes() {
+        let f = parse_filter(&[s("1.2")]).unwrap();
+        assert!(!passes("EXC", &[], &f, &[]));
+        assert!(!passes("exc", &[], &f, &[]));
+        // Even a wide range and ONLY reject EXC.
+        assert!(!passes(
+            "EXC",
+            &[],
+            &parse_filter(&[s("0.0"), s("9.9")]).unwrap(),
+            &[]
+        ));
     }
 
     #[test]
