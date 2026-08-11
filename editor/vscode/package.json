@@ -2,7 +2,7 @@
   "name": "vertion",
   "displayName": "Vertion",
   "description": "Syntax highlighting, auto-close, rename pair, folding, and snippets for Vertion version markers.",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "publisher": "vertx-dev",
   "license": "MIT",
   "engines": {
@@ -25,6 +25,8 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
+    "workspaceContains:vertion.toml",
+    "workspaceContains:vertion.cfg",
     "onLanguage:javascript",
     "onLanguage:javascriptreact",
     "onLanguage:typescript",
@@ -246,6 +248,11 @@
           "type": "string",
           "default": "1px",
           "description": "CSS border width applied to both lines of a matched marker pair (e.g. '0', '1px', '2px solid')."
+        },
+        "vertion.warnOnBuildOutputEdit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn when editing a file inside a Vertion build output folder (detected by the vertion.manifest.json the builder writes there). Edits to build output are overwritten by the next build."
         }
       }
     },
