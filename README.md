@@ -143,7 +143,7 @@ assets/.vertion.logo.png/
     .vertion.default.png   # used when nothing matches
 ```
 
-`vertion build -v 2.5 --tag beta` writes `assets/logo.png` from `2.0.0-beta.png`. Highest version wins; at the same version the more specific variant (more tags/conditions) wins. Every variant must share the extension declared by the directory name. `.vertion.assets/` does the same for whole folders. See [DOCS.md](DOCS.md#59b-variant-directories-vertiontarget) for the full grammar.
+`vertion build -v 2.5 --tag beta` writes `assets/logo.png` from `2.0.0-beta.png`. Highest version wins; then `[project].tag_priority`; then the more specific variant (more tags/conditions). Every variant must share the extension declared by the directory name. `.vertion.assets/` does the same for whole folders. See [DOCS.md](DOCS.md#59b-variant-directories-vertiontarget) for the full grammar.
 
 ## Config (`vertion.cfg`)
 
@@ -155,6 +155,8 @@ output  = "./build"
 ignore  = ["./build", "./node_modules"]
 default_tags = []        # tags active when --tag isn't given.
                          # [] = skip all tagged content; ["*"] = allow every tag.
+tag_priority = []        # tie-breaker when several file variants match equally,
+                         # e.g. ["beta", "combat"] — earlier entries win.
 
 [build]
 increment = "minor"          # major | minor | patch

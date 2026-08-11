@@ -157,6 +157,11 @@ pub struct ProjectSection {
     /// Use `["*"]` to admit every tag.
     #[serde(default)]
     pub default_tags: Vec<String>,
+    /// Tag preference order, most important first. Breaks ties when several
+    /// variants of the same file match at the same version — without it, two
+    /// equally specific matches are an ambiguity error.
+    #[serde(default)]
+    pub tag_priority: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -240,6 +245,7 @@ impl VertionConfig {
                 output: default_output(),
                 ignore: vec![PathBuf::from("./build"), PathBuf::from("./node_modules")],
                 default_tags: Vec::new(),
+                tag_priority: Vec::new(),
             },
             build: BuildSection {
                 increment: default_increment(),
@@ -315,6 +321,7 @@ impl VertionConfig {
             run,
             run_here,
             tags,
+            tag_priority: self.project.tag_priority.clone(),
             wrap,
             wrap_name,
         })
@@ -360,6 +367,7 @@ pub struct ResolvedSettings {
     pub run: Vec<String>,
     pub run_here: Vec<String>,
     pub tags: Vec<String>,
+    pub tag_priority: Vec<String>,
     pub wrap: Option<String>,
     pub wrap_name: Option<String>,
 }

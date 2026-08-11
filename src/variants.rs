@@ -38,17 +38,33 @@ pub struct VariantSpec {
     pub is_default: bool,
 }
 
+/// Best (lowest) position of any of `tags` in the priority list; `usize::MAX`
+/// when none of them are listed.
+fn priority_index(tags: &[String], priority: &[String]) -> usize {
+    tags.iter()
+        .filter_map(|t| priority.iter().position(|p| p.eq_ignore_ascii_case(t)))
+        .min()
+        .unwrap_or(usize::MAX)
+}
+
+/// Comparable rank for "best variant wins". Compared lexicographically.
+pub type VariantRank = (Version, std::cmp::Reverse<usize>, usize, usize);
+
 impl VariantSpec {
-    /// Rank for "highest wins", compared lexicographically.
+    /// Rank for "best wins", compared lexicographically:
     ///
-    /// Version first — unversioned variants sort lowest, so a versioned variant
-    /// always beats a bare-tag one. Then **specificity**: at the same version, a
-    /// variant carrying more tags/conditions is a deliberate override of the
-    /// plainer one (`2.0.0-beta.png` exists to replace `2.0.0.png` for beta
-    /// builds), so it wins rather than colliding with it.
-    pub fn rank(&self) -> (Version, usize, usize) {
+    /// 1. **Version** — unversioned variants sort lowest, so a versioned variant
+    ///    always beats a bare-tag one.
+    /// 2. **Tag priority** (`[project].tag_priority`) — an explicit statement of
+    ///    which tag matters more, so it outranks the specificity heuristic below.
+    ///    Unlisted tags rank last. `Reverse` because a lower index is better.
+    /// 3. **Specificity** — more tags, then more conditions. At the same version
+    ///    a variant carrying more of them is a deliberate override of the plainer
+    ///    one (`2.0.0-beta.png` exists to replace `2.0.0.png` for beta builds).
+    pub fn rank(&self, priority: &[String]) -> VariantRank {
         (
             self.min.clone().unwrap_or_else(|| Version::new(0, 0, 0)),
+            std::cmp::Reverse(priority_index(&self.tags, priority)),
             self.tags.len(),
             self.conditions.len(),
         )
@@ -265,7 +281,58 @@ mod tests {
     fn versioned_outranks_unversioned() {
         let bare = parse_variant_stem("beta").unwrap();
         let versioned = parse_variant_stem("2.0.0").unwrap();
-        assert!(versioned.rank() > bare.rank());
+        assert!(versioned.rank(&[]) > bare.rank(&[]));
+    }
+
+    #[test]
+    fn tag_priority_breaks_ties_between_equal_variants() {
+        // Without a priority list these are indistinguishable — same version,
+        // same tag count — which is the ambiguity the setting exists to resolve.
+        let beta = parse_variant_stem("2.0.0-beta").unwrap();
+        let combat = parse_variant_stem("2.0.0-combat").unwrap();
+        assert_eq!(beta.rank(&[]), combat.rank(&[]));
+
+        let priority = vec!["beta".to_string(), "combat".to_string()];
+        assert!(beta.rank(&priority) > combat.rank(&priority));
+        // Reversing the list reverses the winner.
+        let flipped = vec!["combat".to_string(), "beta".to_string()];
+        assert!(combat.rank(&flipped) > beta.rank(&flipped));
+    }
+
+    #[test]
+    fn listed_tags_outrank_unlisted_ones() {
+        let listed = parse_variant_stem("2.0.0-beta").unwrap();
+        // Two tags but neither is listed: priority beats the specificity count.
+        let unlisted = parse_variant_stem("2.0.0-x-y").unwrap();
+        let priority = vec!["beta".to_string()];
+        assert!(listed.rank(&priority) > unlisted.rank(&priority));
+        // With no priority configured, specificity decides as before.
+        assert!(unlisted.rank(&[]) > listed.rank(&[]));
+    }
+
+    #[test]
+    fn a_variant_ranks_by_its_best_tag() {
+        // `combat` is last, but the variant also carries `beta`, which is first.
+        let mixed = parse_variant_stem("2.0.0-combat-beta").unwrap();
+        let plain_combat = parse_variant_stem("2.0.0-combat").unwrap();
+        let priority = vec!["beta".to_string(), "combat".to_string()];
+        assert!(mixed.rank(&priority) > plain_combat.rank(&priority));
+    }
+
+    #[test]
+    fn version_still_dominates_tag_priority() {
+        let low_but_preferred = parse_variant_stem("1.0.0-beta").unwrap();
+        let high_unlisted = parse_variant_stem("2.0.0-combat").unwrap();
+        let priority = vec!["beta".to_string()];
+        assert!(high_unlisted.rank(&priority) > low_but_preferred.rank(&priority));
+    }
+
+    #[test]
+    fn tag_priority_is_case_insensitive() {
+        let s = parse_variant_stem("2.0.0-Beta").unwrap();
+        let other = parse_variant_stem("2.0.0-combat").unwrap();
+        let priority = vec!["beta".to_string()];
+        assert!(s.rank(&priority) > other.rank(&priority));
     }
 
     #[test]
@@ -274,10 +341,10 @@ mod tests {
         let plain = parse_variant_stem("2.0.0").unwrap();
         let tagged = parse_variant_stem("2.0.0-beta").unwrap();
         let conditioned = parse_variant_stem("2.0.0-beta@ready").unwrap();
-        assert!(tagged.rank() > plain.rank());
-        assert!(conditioned.rank() > tagged.rank());
+        assert!(tagged.rank(&[]) > plain.rank(&[]));
+        assert!(conditioned.rank(&[]) > tagged.rank(&[]));
         // Version still dominates specificity.
         let higher = parse_variant_stem("3.0.0").unwrap();
-        assert!(higher.rank() > conditioned.rank());
+        assert!(higher.rank(&[]) > conditioned.rank(&[]));
     }
 }

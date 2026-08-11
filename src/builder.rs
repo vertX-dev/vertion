@@ -46,6 +46,9 @@ pub struct BuildOptions<'a> {
     pub file_versions: &'a [(String, FileVersionSpec)],
     /// Resolved `(name, value)` condition pairs for `{cond}` marker tags.
     pub conditions: &'a [(String, bool)],
+    /// Tag preference order (`[project].tag_priority`), most important first.
+    /// Breaks ties between equally specific file variants.
+    pub tag_priority: &'a [String],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -438,12 +441,16 @@ fn resolve_variant_dir(
         }
         match &best {
             Some((best_spec, best_path)) => {
-                let (a, b) = (spec.rank(), best_spec.rank());
+                let (a, b) = (
+                    spec.rank(opts.tag_priority),
+                    best_spec.rank(opts.tag_priority),
+                );
                 if a > b {
                     best = Some((spec, path));
                 } else if a == b {
                     return Err(io::Error::other(format!(
-                        "{}: variants `{}` and `{}` both match at the same version — ambiguous",
+                        "{}: variants `{}` and `{}` match equally — add one of their tags to \
+                         [project].tag_priority to choose a winner",
                         dir.display(),
                         best_path.file_name().unwrap_or_default().to_string_lossy(),
                         path.file_name().unwrap_or_default().to_string_lossy()
@@ -558,6 +565,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(result.output.ends_with("1.0.0"));
@@ -592,6 +600,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert_eq!(predicted, result.output);
@@ -638,6 +647,7 @@ mod tests {
             no_comments: false,
             file_versions: &file_versions,
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("logo.png").exists());
@@ -686,6 +696,7 @@ mod tests {
             no_comments: false,
             file_versions: &file_versions,
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("combat.png").exists());
@@ -712,6 +723,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         }
     }
 
@@ -761,6 +773,33 @@ mod tests {
         assert_eq!(
             fs::read_to_string(r2.output.join("logo.png")).unwrap(),
             "beta"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tag_priority_resolves_an_otherwise_ambiguous_pair() {
+        let root = tmpdir("variant-priority");
+        let input = root.join("src");
+        let output = root.join("build");
+        let vdir = input.join(".vertion.logo.png");
+        write_file(&vdir.join("2.0.0-beta.png"), "beta");
+        write_file(&vdir.join("2.0.0-combat.png"), "combat");
+
+        let filter = parse_filter(&[String::from("2.5")]).unwrap();
+        let tags = vec![String::from("beta"), String::from("combat")];
+
+        // Both tags active, same version, same specificity → ambiguous.
+        let mut opts = variant_opts(&input, &output, &filter, &tags);
+        assert!(build_project(opts.clone()).is_err());
+
+        // A priority list picks a winner.
+        let priority = vec![String::from("combat"), String::from("beta")];
+        opts.tag_priority = &priority;
+        let r = build_project(opts).unwrap();
+        assert_eq!(
+            fs::read_to_string(r.output.join("logo.png")).unwrap(),
+            "combat"
         );
         let _ = fs::remove_dir_all(&root);
     }
@@ -865,6 +904,7 @@ mod tests {
             no_comments: false,
             file_versions: &file_versions,
             conditions: &conditions,
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(result.output.join("gated.png").exists());
@@ -893,6 +933,7 @@ mod tests {
             no_comments: false,
             file_versions: &file_versions,
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("draft.png").exists());
@@ -919,6 +960,7 @@ mod tests {
             no_comments: true,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         let a = fs::read_to_string(result.output.join("a.js")).unwrap();
@@ -948,6 +990,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(result.output.join("keep.js").exists());
@@ -975,6 +1018,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         let name = result
@@ -1008,6 +1052,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         assert!(build_project(opts).is_err());
         let _ = fs::remove_dir_all(&root);

@@ -448,6 +448,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         no_comments: args.no_comments,
         file_versions: &file_versions,
         conditions: &condition_pairs,
+        tag_priority: &resolved.tag_priority,
     };
 
     let build_outcome = build_project(opts);
@@ -588,6 +589,7 @@ fn cmd_extract(
         no_comments: false,
         file_versions: &file_versions,
         conditions: &condition_pairs,
+        tag_priority: &resolved.tag_priority,
     };
     let result = build_project(opts).map_err(|e| e.to_string())?;
     println!(
@@ -688,6 +690,7 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
         no_comments: args.no_comments,
         file_versions: &file_versions,
         conditions: &condition_pairs,
+        tag_priority: &resolved.tag_priority,
     };
     let (out_commands, here_commands) = resolve_run_lists(&args, &resolved);
     watcher::watch_and_rebuild(opts, &out_commands, &here_commands, &build_env)

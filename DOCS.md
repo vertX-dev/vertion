@@ -33,6 +33,8 @@ ignore  = ["./build", "./node_modules"]   # default: [] (init seeds these two)
 default_tags = []               # tags active when --tag / profile tags are absent.
                                 # [] = no tags active (all tagged content skipped);
                                 # ["*"] = every tag active.
+tag_priority = ["beta", "combat"]   # tie-breaker when several file variants match
+                                    # equally; earlier entries win.
 
 [build]
 increment = "minor"             # "major" | "minor" | "patch". Default: "minor".
@@ -105,6 +107,7 @@ bool = true
 | `output` | path | `"./build"` | Root; a per-version subfolder is created beneath it. |
 | `ignore` | array of paths | `[]` | Paths under here are skipped entirely by `build`/`last`/`extract`/`watch`. |
 | `default_tags` | array of strings | `[]` | Tags active when neither `--tag` nor a profile's `tags` is given. **Empty means no tags are active**, so all tagged code and files are skipped. Use `["*"]` to admit every tag. |
+| `tag_priority` | array of strings | `[]` | Tag preference order, most important first. Breaks ties between equally-matching file variants (see [§5.9b](#59b-variant-directories-vertiontarget)). Matching is case-insensitive; unlisted tags rank last. Has no effect on in-code blocks, where every passing block is kept. |
 
 ### `[build]`
 
@@ -731,7 +734,12 @@ The leading `-` is only needed when something precedes, so a stem may start with
 
 1. Every variant's extension must equal the one declared by the directory name → otherwise a hard error. (Folder variants have no extension, so the rule doesn't apply.)
 2. Keep variants whose version window contains the filter's upper bound, whose tags are active, and whose conditions all hold.
-3. **Highest version wins.** At the same version, the **more specific** variant wins — more tags, then more conditions — because `2.0.0-beta.png` exists precisely to override `2.0.0.png` for beta builds. A genuine tie (identical specificity) is a hard error.
+3. Rank the survivors and take the best, comparing in this order:
+   1. **Version** — highest wins. Unversioned variants rank lowest, so a versioned variant always beats a bare-tag one.
+   2. **Tag priority** — the position of the variant's best tag in `[project].tag_priority`. An explicit statement of intent, so it outranks the specificity heuristic below. Unlisted tags rank last.
+   3. **Specificity** — more tags, then more conditions, because `2.0.0-beta.png` exists precisely to override `2.0.0.png` for beta builds.
+
+   A remaining tie is a hard error naming both files and suggesting `tag_priority`.
 4. No match → `.vertion.default.<ext>` if present; otherwise nothing is emitted and a warning names the missing file (`--strict` turns that into a failure).
 
 **Folders** work the same way: `.vertion.assets/` holds variant *subdirectories* (`1.0.0/`, `2.0.0/`, `-beta/`), and the winner's whole subtree is copied out as `assets/`.
