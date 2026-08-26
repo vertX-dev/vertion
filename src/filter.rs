@@ -1,12 +1,15 @@
 use semver::Version;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncludeEntry {
     pub from: Version,
     pub to: Version,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+// Serializable so a build's exact filter can be recorded in the manifest and
+// replayed later by `vertion map`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterMode {
     Cumulative(Version),
     Range(Version, Version),

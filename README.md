@@ -43,6 +43,7 @@ vertion validate --strict                    # check markers project-wide
 vertion stats                                # marker stats
 vertion watch -v 1.2                         # rebuild on file change
 vertion last                                 # rebuild with previous settings
+vertion map build/1.2.0/app.js:57            # which source line is that?
 
 # Conditions gating `[tag{cond}]` markers (project cfg, or -G for the global one)
 vertion condition --add imagesInStable --bool false
@@ -219,6 +220,34 @@ Use a profile with `--profile prod`. `--auto` increments `[project].version` aft
 `[[files]]` assigns a version to a whole file. The file is excluded from the build when its version fails the active filter (e.g. `logo.png` above is dropped from any build below `2.0`); otherwise it copies as-is. Use `version = "EXC"` to exclude a file from every build. Applies to `build`, `extract`, and `watch`.
 
 > The config file is `vertion.cfg` (TOML syntax). A legacy `vertion.toml` is still read and written back to if present, so existing projects keep working — rename it to `vertion.cfg` when convenient.
+
+## Debugging a build (`vertion map`)
+
+Stripping a version block shifts every line below it, so a line number from a
+build tree doesn't point at the same place in your source. `vertion map`
+translates between the two — the direction is inferred from the path.
+
+```sh
+vertion map build/1.2.0/game.rs:57:9   # a built line -> the source line
+vertion map src/game.rs:112            # and back the other way
+vertion map --list build/1.2.0/game.rs # the whole map for one file
+
+# Or pipe a whole stack trace / build log through it, and every recognized
+# file reference is rewritten to point at the source. Unrecognized text is
+# passed through untouched.
+cargo run 2>&1 | vertion map --stdin
+node build/1.2.0/app.js 2>&1 | vertion map --stdin
+```
+
+It costs a build nothing: the map is recomputed on demand from the source file
+plus the settings recorded in `vertion.manifest.json`, so there's no sidecar to
+write and nothing that can go stale. If you edit the source after building,
+vertion notices the line counts no longer agree and says so.
+
+Mapping *forward* from a line the build stripped has no exact answer — vertion
+reports the next surviving line and flags it.
+
+The VSCode extension exposes the same jump on **Ctrl+K Ctrl+L**.
 
 ## Build environment
 

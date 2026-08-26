@@ -26,6 +26,43 @@ pub struct BuildResult {
     pub version: String,
     pub mode: String,
     pub warnings: Vec<String>,
+    /// How this build was configured. Recorded so `vertion map` can replay the
+    /// exact same filtering later and trace an output line back to its source.
+    #[serde(default)]
+    pub spec: BuildSpec,
+}
+
+/// The inputs that decide what a build keeps — everything `process_file` and
+/// the file-level gates consult. Enough to reproduce any output file from its
+/// source without re-reading the project config.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct BuildSpec {
+    /// Absolute path of the source tree this build was produced from.
+    pub input: PathBuf,
+    /// `None` only in manifests written before this field existed.
+    pub filter: Option<FilterMode>,
+    pub tags: Vec<String>,
+    pub conditions: Vec<(String, bool)>,
+    pub no_comments: bool,
+    pub preserve_context: bool,
+    /// Needed to replay variant-directory resolution, which is what decides
+    /// which source file an output path actually came from.
+    #[serde(default)]
+    pub tag_priority: Vec<String>,
+}
+
+impl BuildOptions<'_> {
+    fn spec(&self, input_abs: &Path) -> BuildSpec {
+        BuildSpec {
+            input: input_abs.to_path_buf(),
+            filter: Some(self.filter.clone()),
+            tags: self.tags.to_vec(),
+            conditions: self.conditions.to_vec(),
+            no_comments: self.no_comments,
+            preserve_context: self.preserve_context,
+            tag_priority: self.tag_priority.to_vec(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +130,7 @@ pub fn build_project(opts: BuildOptions<'_>) -> Result<BuildResult, io::Error> {
         output: output_abs.clone(),
         version: opts.filter.upper().to_string(),
         mode: opts.filter.name().to_string(),
+        spec: opts.spec(&input_abs),
         ..Default::default()
     };
 
@@ -367,7 +405,7 @@ fn inside_variant_dir(path: &Path, root: &Path) -> bool {
 /// Highest matching version wins; `.vertion.default.*` is the fallback when
 /// nothing matches. Returns `Ok(None)` (with a warning) when there is no winner.
 #[allow(clippy::type_complexity)]
-fn resolve_variant_dir(
+pub(crate) fn resolve_variant_dir(
     dir: &Path,
     input_root: &Path,
     opts: &BuildOptions<'_>,
@@ -511,7 +549,7 @@ fn clear_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn absolute(p: &Path) -> PathBuf {
+pub(crate) fn absolute(p: &Path) -> PathBuf {
     if p.is_absolute() {
         p.to_path_buf()
     } else {

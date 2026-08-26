@@ -380,6 +380,7 @@ version = "EXC"
 | `vertion init` | — | Create `vertion.cfg` |
 | `vertion include` | — | Manage the persisted `[[include]]` list |
 | `vertion condition` | `c` | Manage the named `[conditions.*]` used by `{cond}` tags |
+| `vertion map` | `m` | Translate line numbers between a build output and its source |
 
 Run `vertion --help` or `vertion <command> --help` for the live version of any of this.
 
@@ -583,6 +584,88 @@ imagesInStable           false  bool
 ```
 
 ---
+
+### 4.14. `vertion map`
+
+```
+vertion map [FILE:LINE ...] [--stdin] [--list FILE]
+            [--build DIR] [--profile NAME] [--json]
+```
+
+A build strips version blocks, and everything below a stripped block moves up.
+So a line number from a build tree — in a stack trace, a compiler error, a
+debugger — does **not** point at the same line in your source. `vertion map`
+translates between the two.
+
+Direction is inferred from the path: a file inside the build tree maps **back to
+source**, a file inside the input tree maps **forward into the build**.
+
+| Flag | Short | Effect |
+|---|---|---|
+| `FILE:LINE` | — | Reference to translate. `FILE:LINE:COL` also works — the column is ignored, so you can paste a compiler error verbatim. Repeatable. |
+| `--stdin` | — | Read tool output on stdin and rewrite every file reference in it. Everything unrecognized passes through untouched. |
+| `--list FILE` | — | Print the whole line map for one file instead of translating a point. |
+| `--build DIR` | `-b` | The build directory to map against. Default: inferred (see below). |
+| `--profile NAME` | `-p` | Profile whose `output` to search when inferring the build. |
+| `--json` | `-j` | Machine-readable output. |
+
+**Finding the build.** With no `--build`, vertion walks up from the first path
+you gave (or the working directory) looking for a `vertion.manifest.json` —
+which is the answer whenever you point at build output. Failing that it finds
+`vertion.cfg`, then takes the **most recently written** build under the
+configured `output` root.
+
+```sh
+# One reference, pasted straight out of a compiler.
+vertion map build/1.0.0/game.rs:4:5
+#   build\1.0.0\game.rs:4  ->  src\game.rs:11
+
+# The other direction: where did my source line end up?
+vertion map src/game.rs:11
+
+# A whole stack trace or build log at once.
+cargo run 2>&1 | vertion map --stdin
+node build/1.0.0/app.js 2>&1 | vertion map --stdin
+
+# The full picture for one file.
+vertion map --list build/1.0.0/game.rs
+```
+
+`--stdin` recognizes the shapes essentially every toolchain emits: `path:line`
+and `path:line:col` (rustc, gcc, node, eslint), `path(line,col)` (tsc, MSVC),
+and `File "path", line N` (Python).
+
+**When a source line was stripped.** Mapping *forward* from a line this build
+removed has no exact answer, so vertion reports the next surviving line and says
+so:
+
+```
+src\game.rs:8  ->  build\1.0.0\game.rs:3
+  note: line 8 was stripped from this build; showing the next surviving line (10 in source)
+```
+
+**`--list` output:**
+
+```
+src\game.rs  ->  build\1.0.0\game.rs
+  source 1-2  ->  output 1-2
+  source 3-9 stripped (7 lines)
+  source 10-12  ->  output 3-5
+  5 output lines
+```
+
+**No build-time cost, no stale data.** Nothing extra is written during a build.
+The map is recomputed on demand by re-running the filter over the source file,
+using the settings recorded in the manifest's `spec`. The one thing this can't
+survive is editing the source *after* the build — vertion detects that by
+comparing line counts and warns:
+
+```
+  note: source has changed since this build — mapping may be off
+```
+
+Builds produced before `spec` existed in the manifest can't be mapped; re-run
+the build once and they can.
 
 ## 5. Feature deep dives
 
@@ -790,9 +873,22 @@ Evaluation semantics inside a build:
   "output": "/abs/path/to/build/1.2.0",
   "version": "1.2.0",
   "mode": "cumulative",
-  "warnings": []
+  "warnings": [],
+  "spec": {
+    "input": "/abs/path/to/src",
+    "filter": { "Cumulative": "1.2.0" },
+    "tags": ["stable"],
+    "conditions": [["imagesInStable", true]],
+    "no_comments": false,
+    "preserve_context": false,
+    "tag_priority": ["stable"]
+  }
 }
 ```
+
+`spec` records how the build was configured. It's what [`vertion map`](#414-vertion-map)
+replays to trace a build-output line back to its source line — treat it as
+vertion's own bookkeeping rather than a stable public field set.
 
 Files with no markers (and, under `--no-comments`, no comments either) are copied byte-for-byte; everything else is rewritten.
 

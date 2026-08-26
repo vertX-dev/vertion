@@ -88,7 +88,11 @@ async function updateStatusBar(editor: vscode.TextEditor | undefined): Promise<v
     statusItem.text = "$(warning) Vertion build output";
     statusItem.tooltip =
         `This file is inside ${root.path.split("/").pop()}, a Vertion build output folder.\n` +
-        "Edits here are overwritten by the next build — change the source instead.";
+        "Edits here are overwritten by the next build — change the source instead.\n" +
+        "Click to jump to the source line this one came from.";
+    // Stripped blocks shift the line numbers, so "the same line" isn't the same
+    // line — the command does the translation.
+    statusItem.command = "vertion.revealCounterpart";
     statusItem.backgroundColor = new vscode.ThemeColor(
         "statusBarItem.warningBackground",
     );
@@ -107,9 +111,15 @@ async function warnOnEdit(doc: vscode.TextDocument): Promise<void> {
 
     const choice = await vscode.window.showWarningMessage(
         `Vertion: you're editing build output — the next build will overwrite ${doc.uri.path.split("/").pop()}. Edit the source file instead.`,
+        "Go to Source",
         "Make Folder Read-Only",
         "Don't Warn Again",
     );
+    if (choice === "Go to Source") {
+        // The cursor sits on a *built* line; the command translates it back.
+        await vscode.commands.executeCommand("vertion.revealCounterpart");
+        return;
+    }
     if (choice === "Don't Warn Again") {
         await vscode.workspace
             .getConfiguration(CONFIG_SECTION)
