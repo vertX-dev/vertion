@@ -6,7 +6,9 @@
 //! - [`filter::parse_filter`] — parse `["1.2"]` / `["1.1","1.2"]` into a [`filter::FilterMode`]
 //! - [`parser::process_file`] — strip version blocks that don't pass the filter
 //! - [`config::detect_comment_style`] / [`config::CommentStyle`] — `//` vs `#` by extension
+//! - [`linemap`] — map filtered output line numbers back to source line numbers
 
 pub mod config;
 pub mod filter;
+pub mod linemap;
 pub mod parser;

@@ -13,7 +13,9 @@ Editor support for [Vertion](https://github.com/vertX-dev/vertion) version marke
 - **Duplicate block** — copy the block under the cursor with a different version, ready to diverge.
 - **Split block by version** — flatten a block containing nested version blocks into one standalone block per version variant.
 - **Explorer context menu** — right-click any file or folder for a **Vertion** submenu that manages `.vertion.<target>/` variant directories.
-- **Commands** — jump, wrap, duplicate, and split (Command Palette + rebindable keys).
+- **Build output guard** — editing a file inside a build output folder shows a warning and a status bar badge, because the next build overwrites it.
+- **Line mapping** — jump between a line in build output and the source line that produced it, across the blocks the build stripped.
+- **Commands** — jump, wrap, duplicate, split, and map (Command Palette + rebindable keys).
 
 ## Explorer menu — per-version files
 
@@ -38,6 +40,7 @@ Every prompt validates the spec against the same grammar the Rust builder uses (
 | `vertion.wrapSelectionInBlock` | `Ctrl+K Ctrl+V` (`Cmd+K Cmd+V` on macOS) | Prompt for a version (or `ALL` / `EXC`) and wrap the selection in open/close markers. |
 | `vertion.duplicateBlockWithVersion` | `Ctrl+K Ctrl+D` (`Cmd+K Cmd+D` on macOS) | Copy the block under the cursor beneath itself under a new version. Tags, conditions and `*` are preserved; only the version changes. |
 | `vertion.splitBlockByVersion` | `Ctrl+K Ctrl+P` (`Cmd+K Cmd+P` on macOS) | Split a block containing nested version blocks into one standalone block per variant. |
+| `vertion.revealCounterpart` | `Ctrl+K Ctrl+L` (`Cmd+K Cmd+L` on macOS) | Jump to the matching line on the other side of the build — see [Line mapping](#line-mapping). |
 
 ### Split by version
 
@@ -98,6 +101,39 @@ Details:
 
 Rebind either via VSCode's keyboard shortcuts editor (`Ctrl+K Ctrl+S`) — search for "Vertion".
 
+## Build output guard
+
+The builder writes `vertion.manifest.json` into every folder it produces, so any
+file with that manifest above it *is* build output — no matter whether the path
+came from `[project].output`, a profile, `--output`, or a `--dev` timestamped
+folder. Nothing has to be configured.
+
+Editing such a file gets you a one-time warning per file per session, plus a
+persistent status bar badge while it's open. The warning offers:
+
+- **Go to Source** — jump to the source line this one came from (see below).
+- **Make Folder Read-Only** — adds the folder to `files.readonlyInclude` for the
+  workspace, so VSCode itself blocks further edits.
+- **Don't Warn Again** — turns off `vertion.warnOnBuildOutputEdit` globally.
+
+## Line mapping
+
+A build strips version blocks, and everything below a stripped block moves up.
+So the line a stack trace or compiler error names in the build tree is *not* the
+same line in your source. **Ctrl+K Ctrl+L** (or clicking the build output status
+bar badge) jumps to the counterpart of the cursor's line: from build output to
+source, or from source to build output — whichever way round you're facing.
+
+Two things worth knowing:
+
+- It shells out to the `vertion` CLI (`vertion map --json`), so the binary has to
+  be on `PATH` or named in `vertion.executablePath`. The extension deliberately
+  doesn't reimplement the mapping: it depends on the full filter semantics —
+  versions, ranges, tags, conditions, variant directories — and a second
+  implementation would drift from the first.
+- Jumping *forward* from a source line the build stripped has no exact answer.
+  You land on the next surviving line, and a warning says what happened.
+
 ## Settings
 
 | Setting | Default | Description |
@@ -106,6 +142,8 @@ Rebind either via VSCode's keyboard shortcuts editor (`Ctrl+K Ctrl+S`) — searc
 | `vertion.highlight.backgroundColor` | `#3a8bff33` | Background color applied to both lines of a matched pair. Any valid CSS color. |
 | `vertion.highlight.borderColor` | `#3a8bffaa` | Border color applied to both lines of a matched pair. Leave empty to hide the border. |
 | `vertion.highlight.borderWidth` | `1px` | CSS border width. Set to `0` to hide the border. |
+| `vertion.warnOnBuildOutputEdit` | `true` | Warn when editing a file inside a build output folder. |
+| `vertion.executablePath` | `vertion` | Path to the `vertion` binary, used for line mapping. Leave as-is to find it on `PATH`. |
 
 ## Install
 

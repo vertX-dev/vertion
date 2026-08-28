@@ -7,6 +7,8 @@ import { registerFolding } from "./folding";
 import { registerHighlight } from "./highlight";
 import { registerCommands } from "./commands";
 import { registerExplorerCommands } from "./explorer";
+import { registerBuildGuard } from "./buildGuard";
+import { registerMapCommands } from "./mapLine";
 
 // Language → comment style. Mirrors `src/config.rs::detect_comment_style`.
 // Unknown languages default to `//` (matches Rust default).
@@ -50,6 +52,8 @@ export function activate(ctx: vscode.ExtensionContext): void {
     registerHighlight(ctx, DOCUMENT_SELECTOR);
     registerCommands(ctx);
     registerExplorerCommands(ctx);
+    registerBuildGuard(ctx);
+    registerMapCommands(ctx);
 
     ctx.subscriptions.push(
         vscode.workspace.onDidCloseTextDocument((doc) => {

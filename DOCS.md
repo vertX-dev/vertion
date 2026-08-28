@@ -33,6 +33,8 @@ ignore  = ["./build", "./node_modules"]   # default: [] (init seeds these two)
 default_tags = []               # tags active when --tag / profile tags are absent.
                                 # [] = no tags active (all tagged content skipped);
                                 # ["*"] = every tag active.
+tag_priority = ["beta", "combat"]   # tie-breaker when several file variants match
+                                    # equally; earlier entries win.
 
 [build]
 increment = "minor"             # "major" | "minor" | "patch". Default: "minor".
@@ -105,6 +107,7 @@ bool = true
 | `output` | path | `"./build"` | Root; a per-version subfolder is created beneath it. |
 | `ignore` | array of paths | `[]` | Paths under here are skipped entirely by `build`/`last`/`extract`/`watch`. |
 | `default_tags` | array of strings | `[]` | Tags active when neither `--tag` nor a profile's `tags` is given. **Empty means no tags are active**, so all tagged code and files are skipped. Use `["*"]` to admit every tag. |
+| `tag_priority` | array of strings | `[]` | Tag preference order, most important first. Breaks ties between equally-matching file variants (see [§5.9b](#59b-variant-directories-vertiontarget)). Matching is case-insensitive; unlisted tags rank last. Has no effect on in-code blocks, where every passing block is kept. |
 
 ### `[build]`
 
@@ -377,6 +380,7 @@ version = "EXC"
 | `vertion init` | — | Create `vertion.cfg` |
 | `vertion include` | — | Manage the persisted `[[include]]` list |
 | `vertion condition` | `c` | Manage the named `[conditions.*]` used by `{cond}` tags |
+| `vertion map` | `m` | Translate line numbers between a build output and its source |
 
 Run `vertion --help` or `vertion <command> --help` for the live version of any of this.
 
@@ -581,6 +585,88 @@ imagesInStable           false  bool
 
 ---
 
+### 4.14. `vertion map`
+
+```
+vertion map [FILE:LINE ...] [--stdin] [--list FILE]
+            [--build DIR] [--profile NAME] [--json]
+```
+
+A build strips version blocks, and everything below a stripped block moves up.
+So a line number from a build tree — in a stack trace, a compiler error, a
+debugger — does **not** point at the same line in your source. `vertion map`
+translates between the two.
+
+Direction is inferred from the path: a file inside the build tree maps **back to
+source**, a file inside the input tree maps **forward into the build**.
+
+| Flag | Short | Effect |
+|---|---|---|
+| `FILE:LINE` | — | Reference to translate. `FILE:LINE:COL` also works — the column is ignored, so you can paste a compiler error verbatim. Repeatable. |
+| `--stdin` | — | Read tool output on stdin and rewrite every file reference in it. Everything unrecognized passes through untouched. |
+| `--list FILE` | — | Print the whole line map for one file instead of translating a point. |
+| `--build DIR` | `-b` | The build directory to map against. Default: inferred (see below). |
+| `--profile NAME` | `-p` | Profile whose `output` to search when inferring the build. |
+| `--json` | `-j` | Machine-readable output. |
+
+**Finding the build.** With no `--build`, vertion walks up from the first path
+you gave (or the working directory) looking for a `vertion.manifest.json` —
+which is the answer whenever you point at build output. Failing that it finds
+`vertion.cfg`, then takes the **most recently written** build under the
+configured `output` root.
+
+```sh
+# One reference, pasted straight out of a compiler.
+vertion map build/1.0.0/game.rs:4:5
+#   build\1.0.0\game.rs:4  ->  src\game.rs:11
+
+# The other direction: where did my source line end up?
+vertion map src/game.rs:11
+
+# A whole stack trace or build log at once.
+cargo run 2>&1 | vertion map --stdin
+node build/1.0.0/app.js 2>&1 | vertion map --stdin
+
+# The full picture for one file.
+vertion map --list build/1.0.0/game.rs
+```
+
+`--stdin` recognizes the shapes essentially every toolchain emits: `path:line`
+and `path:line:col` (rustc, gcc, node, eslint), `path(line,col)` (tsc, MSVC),
+and `File "path", line N` (Python).
+
+**When a source line was stripped.** Mapping *forward* from a line this build
+removed has no exact answer, so vertion reports the next surviving line and says
+so:
+
+```
+src\game.rs:8  ->  build\1.0.0\game.rs:3
+  note: line 8 was stripped from this build; showing the next surviving line (10 in source)
+```
+
+**`--list` output:**
+
+```
+src\game.rs  ->  build\1.0.0\game.rs
+  source 1-2  ->  output 1-2
+  source 3-9 stripped (7 lines)
+  source 10-12  ->  output 3-5
+  5 output lines
+```
+
+**No build-time cost, no stale data.** Nothing extra is written during a build.
+The map is recomputed on demand by re-running the filter over the source file,
+using the settings recorded in the manifest's `spec`. The one thing this can't
+survive is editing the source *after* the build — vertion detects that by
+comparing line counts and warns:
+
+```
+  note: source has changed since this build — mapping may be off
+```
+
+Builds produced before `spec` existed in the manifest can't be mapped; re-run
+the build once and they can.
+
 ## 5. Feature deep dives
 
 ### 5.1. `--auto` / auto-increment
@@ -731,7 +817,12 @@ The leading `-` is only needed when something precedes, so a stem may start with
 
 1. Every variant's extension must equal the one declared by the directory name → otherwise a hard error. (Folder variants have no extension, so the rule doesn't apply.)
 2. Keep variants whose version window contains the filter's upper bound, whose tags are active, and whose conditions all hold.
-3. **Highest version wins.** At the same version, the **more specific** variant wins — more tags, then more conditions — because `2.0.0-beta.png` exists precisely to override `2.0.0.png` for beta builds. A genuine tie (identical specificity) is a hard error.
+3. Rank the survivors and take the best, comparing in this order:
+   1. **Version** — highest wins. Unversioned variants rank lowest, so a versioned variant always beats a bare-tag one.
+   2. **Tag priority** — the position of the variant's best tag in `[project].tag_priority`. An explicit statement of intent, so it outranks the specificity heuristic below. Unlisted tags rank last.
+   3. **Specificity** — more tags, then more conditions, because `2.0.0-beta.png` exists precisely to override `2.0.0.png` for beta builds.
+
+   A remaining tie is a hard error naming both files and suggesting `tag_priority`.
 4. No match → `.vertion.default.<ext>` if present; otherwise nothing is emitted and a warning names the missing file (`--strict` turns that into a failure).
 
 **Folders** work the same way: `.vertion.assets/` holds variant *subdirectories* (`1.0.0/`, `2.0.0/`, `-beta/`), and the winner's whole subtree is copied out as `assets/`.
@@ -782,9 +873,22 @@ Evaluation semantics inside a build:
   "output": "/abs/path/to/build/1.2.0",
   "version": "1.2.0",
   "mode": "cumulative",
-  "warnings": []
+  "warnings": [],
+  "spec": {
+    "input": "/abs/path/to/src",
+    "filter": { "Cumulative": "1.2.0" },
+    "tags": ["stable"],
+    "conditions": [["imagesInStable", true]],
+    "no_comments": false,
+    "preserve_context": false,
+    "tag_priority": ["stable"]
+  }
 }
 ```
+
+`spec` records how the build was configured. It's what [`vertion map`](#414-vertion-map)
+replays to trace a build-output line back to its source line — treat it as
+vertion's own bookkeeping rather than a stable public field set.
 
 Files with no markers (and, under `--no-comments`, no comments either) are copied byte-for-byte; everything else is rewritten.
 

@@ -2,7 +2,7 @@
   "name": "vertion",
   "displayName": "Vertion",
   "description": "Syntax highlighting, auto-close, rename pair, folding, and snippets for Vertion version markers.",
-  "version": "0.7.0",
+  "version": "0.9.0",
   "publisher": "vertx-dev",
   "license": "MIT",
   "engines": {
@@ -25,6 +25,8 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
+    "workspaceContains:vertion.toml",
+    "workspaceContains:vertion.cfg",
     "onLanguage:javascript",
     "onLanguage:javascriptreact",
     "onLanguage:typescript",
@@ -196,6 +198,10 @@
       {
         "command": "vertion.flattenVariants",
         "title": "Vertion: Flatten to Plain File/Folder"
+      },
+      {
+        "command": "vertion.revealCounterpart",
+        "title": "Vertion: Go to Matching Line (Source ↔ Build)"
       }
     ],
     "keybindings": [
@@ -222,6 +228,12 @@
         "key": "ctrl+k ctrl+p",
         "mac": "cmd+k cmd+p",
         "when": "editorTextFocus"
+      },
+      {
+        "command": "vertion.revealCounterpart",
+        "key": "ctrl+k ctrl+l",
+        "mac": "cmd+k cmd+l",
+        "when": "editorTextFocus"
       }
     ],
     "configuration": {
@@ -246,6 +258,16 @@
           "type": "string",
           "default": "1px",
           "description": "CSS border width applied to both lines of a matched marker pair (e.g. '0', '1px', '2px solid')."
+        },
+        "vertion.warnOnBuildOutputEdit": {
+          "type": "boolean",
+          "default": true,
+          "description": "Warn when editing a file inside a Vertion build output folder (detected by the vertion.manifest.json the builder writes there). Edits to build output are overwritten by the next build."
+        },
+        "vertion.executablePath": {
+          "type": "string",
+          "default": "vertion",
+          "description": "Path to the vertion executable, used to translate line numbers between a build output file and its source. Leave as `vertion` to find it on PATH."
         }
       }
     },
@@ -282,6 +304,13 @@
           "command": "vertion.flattenVariants",
           "when": "explorerResourceIsFolder && resourceFilename =~ /^\\.vertion\\./",
           "group": "2_destructive"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "vertion.revealCounterpart",
+          "when": "editorTextFocus && resourceScheme == file",
+          "group": "navigation@9"
         }
       ]
     }

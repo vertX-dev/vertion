@@ -312,6 +312,11 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
 #[derive(Debug, Default)]
 pub struct ProcessResult {
     pub lines: Vec<String>,
+    /// For each emitted line, the 1-based line it came from in the input.
+    /// Parallel to `lines`, so `source_lines[i]` describes `lines[i]`. This is
+    /// what lets a build-output line number be traced back to the source line
+    /// that actually produced it (see `linemap`).
+    pub source_lines: Vec<u32>,
     pub had_markers: bool,
     pub unclosed: Vec<String>,
     pub stripped: usize,
@@ -350,6 +355,7 @@ pub fn process_file(
     opts: ProcessOptions<'_>,
 ) -> ProcessResult {
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut source_lines: Vec<u32> = Vec::with_capacity(lines.len());
     let mut stack: Vec<Marker> = Vec::new();
     let mut had_markers = false;
     let mut stripped = 0usize;
@@ -474,6 +480,7 @@ pub fn process_file(
                     stripped += 1;
                 } else if include {
                     out.push(line.clone());
+                    source_lines.push(idx as u32 + 1);
                 } else {
                     stripped += 1;
                 }
@@ -484,6 +491,7 @@ pub fn process_file(
     let unclosed = stack.into_iter().map(|m| m.label()).collect();
     ProcessResult {
         lines: out,
+        source_lines,
         had_markers,
         unclosed,
         stripped,

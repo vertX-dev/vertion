@@ -26,6 +26,43 @@ pub struct BuildResult {
     pub version: String,
     pub mode: String,
     pub warnings: Vec<String>,
+    /// How this build was configured. Recorded so `vertion map` can replay the
+    /// exact same filtering later and trace an output line back to its source.
+    #[serde(default)]
+    pub spec: BuildSpec,
+}
+
+/// The inputs that decide what a build keeps — everything `process_file` and
+/// the file-level gates consult. Enough to reproduce any output file from its
+/// source without re-reading the project config.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct BuildSpec {
+    /// Absolute path of the source tree this build was produced from.
+    pub input: PathBuf,
+    /// `None` only in manifests written before this field existed.
+    pub filter: Option<FilterMode>,
+    pub tags: Vec<String>,
+    pub conditions: Vec<(String, bool)>,
+    pub no_comments: bool,
+    pub preserve_context: bool,
+    /// Needed to replay variant-directory resolution, which is what decides
+    /// which source file an output path actually came from.
+    #[serde(default)]
+    pub tag_priority: Vec<String>,
+}
+
+impl BuildOptions<'_> {
+    fn spec(&self, input_abs: &Path) -> BuildSpec {
+        BuildSpec {
+            input: input_abs.to_path_buf(),
+            filter: Some(self.filter.clone()),
+            tags: self.tags.to_vec(),
+            conditions: self.conditions.to_vec(),
+            no_comments: self.no_comments,
+            preserve_context: self.preserve_context,
+            tag_priority: self.tag_priority.to_vec(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -46,6 +83,9 @@ pub struct BuildOptions<'a> {
     pub file_versions: &'a [(String, FileVersionSpec)],
     /// Resolved `(name, value)` condition pairs for `{cond}` marker tags.
     pub conditions: &'a [(String, bool)],
+    /// Tag preference order (`[project].tag_priority`), most important first.
+    /// Breaks ties between equally specific file variants.
+    pub tag_priority: &'a [String],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -90,6 +130,7 @@ pub fn build_project(opts: BuildOptions<'_>) -> Result<BuildResult, io::Error> {
         output: output_abs.clone(),
         version: opts.filter.upper().to_string(),
         mode: opts.filter.name().to_string(),
+        spec: opts.spec(&input_abs),
         ..Default::default()
     };
 
@@ -364,7 +405,7 @@ fn inside_variant_dir(path: &Path, root: &Path) -> bool {
 /// Highest matching version wins; `.vertion.default.*` is the fallback when
 /// nothing matches. Returns `Ok(None)` (with a warning) when there is no winner.
 #[allow(clippy::type_complexity)]
-fn resolve_variant_dir(
+pub(crate) fn resolve_variant_dir(
     dir: &Path,
     input_root: &Path,
     opts: &BuildOptions<'_>,
@@ -438,12 +479,16 @@ fn resolve_variant_dir(
         }
         match &best {
             Some((best_spec, best_path)) => {
-                let (a, b) = (spec.rank(), best_spec.rank());
+                let (a, b) = (
+                    spec.rank(opts.tag_priority),
+                    best_spec.rank(opts.tag_priority),
+                );
                 if a > b {
                     best = Some((spec, path));
                 } else if a == b {
                     return Err(io::Error::other(format!(
-                        "{}: variants `{}` and `{}` both match at the same version — ambiguous",
+                        "{}: variants `{}` and `{}` match equally — add one of their tags to \
+                         [project].tag_priority to choose a winner",
                         dir.display(),
                         best_path.file_name().unwrap_or_default().to_string_lossy(),
                         path.file_name().unwrap_or_default().to_string_lossy()
@@ -504,7 +549,7 @@ fn clear_dir(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn absolute(p: &Path) -> PathBuf {
+pub(crate) fn absolute(p: &Path) -> PathBuf {
     if p.is_absolute() {
         p.to_path_buf()
     } else {
@@ -558,6 +603,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(result.output.ends_with("1.0.0"));
@@ -592,6 +638,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert_eq!(predicted, result.output);
@@ -638,6 +685,7 @@ mod tests {
             no_comments: false,
             file_versions: &file_versions,
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("logo.png").exists());
@@ -686,6 +734,7 @@ mod tests {
             no_comments: false,
             file_versions: &file_versions,
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("combat.png").exists());
@@ -712,6 +761,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         }
     }
 
@@ -761,6 +811,33 @@ mod tests {
         assert_eq!(
             fs::read_to_string(r2.output.join("logo.png")).unwrap(),
             "beta"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tag_priority_resolves_an_otherwise_ambiguous_pair() {
+        let root = tmpdir("variant-priority");
+        let input = root.join("src");
+        let output = root.join("build");
+        let vdir = input.join(".vertion.logo.png");
+        write_file(&vdir.join("2.0.0-beta.png"), "beta");
+        write_file(&vdir.join("2.0.0-combat.png"), "combat");
+
+        let filter = parse_filter(&[String::from("2.5")]).unwrap();
+        let tags = vec![String::from("beta"), String::from("combat")];
+
+        // Both tags active, same version, same specificity → ambiguous.
+        let mut opts = variant_opts(&input, &output, &filter, &tags);
+        assert!(build_project(opts.clone()).is_err());
+
+        // A priority list picks a winner.
+        let priority = vec![String::from("combat"), String::from("beta")];
+        opts.tag_priority = &priority;
+        let r = build_project(opts).unwrap();
+        assert_eq!(
+            fs::read_to_string(r.output.join("logo.png")).unwrap(),
+            "combat"
         );
         let _ = fs::remove_dir_all(&root);
     }
@@ -865,6 +942,7 @@ mod tests {
             no_comments: false,
             file_versions: &file_versions,
             conditions: &conditions,
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(result.output.join("gated.png").exists());
@@ -893,6 +971,7 @@ mod tests {
             no_comments: false,
             file_versions: &file_versions,
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("draft.png").exists());
@@ -919,6 +998,7 @@ mod tests {
             no_comments: true,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         let a = fs::read_to_string(result.output.join("a.js")).unwrap();
@@ -948,6 +1028,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         assert!(result.output.join("keep.js").exists());
@@ -975,6 +1056,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         let result = build_project(opts).unwrap();
         let name = result
@@ -1008,6 +1090,7 @@ mod tests {
             no_comments: false,
             file_versions: &[],
             conditions: &[],
+            tag_priority: &[],
         };
         assert!(build_project(opts).is_err());
         let _ = fs::remove_dir_all(&root);

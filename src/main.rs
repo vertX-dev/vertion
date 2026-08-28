@@ -3,10 +3,12 @@ mod conditions;
 mod config;
 mod filter;
 mod inspect;
+mod linemap;
 mod parser;
 mod runner;
 mod settings;
 mod stats;
+mod trace;
 mod validator;
 mod variants;
 mod watcher;
@@ -26,6 +28,7 @@ use crate::filter::{
 use crate::settings::{
     load_or_default, save_include, save_last, save_version, write_default_template, VertionConfig,
 };
+use crate::trace::{Direction, Trace};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -111,6 +114,34 @@ enum Command {
     /// Manage the named [conditions.*] used by `{cond}` marker tags
     #[command(visible_alias = "c")]
     Condition(ConditionArgs),
+    /// Translate line numbers between a build output and its source
+    #[command(visible_alias = "m")]
+    Map(MapArgs),
+}
+
+/// `vertion map` — because stripping a block shifts every line below it, a line
+/// number from a build tree doesn't point at the same place in the source.
+#[derive(clap::Args, Debug, Clone)]
+struct MapArgs {
+    /// References to translate: `FILE:LINE`, or `FILE:LINE:COL`. A path inside
+    /// the build tree maps back to source; one inside the source maps forward.
+    #[arg(value_name = "FILE:LINE")]
+    targets: Vec<String>,
+    /// Read tool output on stdin and rewrite every file reference in it
+    #[arg(long)]
+    stdin: bool,
+    /// Print the whole line map for one file instead of translating
+    #[arg(long, value_name = "FILE")]
+    list: Option<PathBuf>,
+    /// Build directory to map against (default: inferred from the first target)
+    #[arg(long, short = 'b', value_name = "DIR")]
+    build: Option<PathBuf>,
+    /// Profile whose output path to search when inferring the build
+    #[arg(long, short = 'p')]
+    profile: Option<String>,
+    /// Emit results as JSON
+    #[arg(long, short = 'j')]
+    json: bool,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -274,6 +305,7 @@ fn run() -> Result<(), String> {
         Command::Init => cmd_init(),
         Command::Include(args) => cmd_include(args),
         Command::Condition(args) => cmd_condition(args),
+        Command::Map(args) => cmd_map(args),
     }
 }
 
@@ -448,6 +480,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         no_comments: args.no_comments,
         file_versions: &file_versions,
         conditions: &condition_pairs,
+        tag_priority: &resolved.tag_priority,
     };
 
     let build_outcome = build_project(opts);
@@ -588,6 +621,7 @@ fn cmd_extract(
         no_comments: false,
         file_versions: &file_versions,
         conditions: &condition_pairs,
+        tag_priority: &resolved.tag_priority,
     };
     let result = build_project(opts).map_err(|e| e.to_string())?;
     println!(
@@ -688,6 +722,7 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
         no_comments: args.no_comments,
         file_versions: &file_versions,
         conditions: &condition_pairs,
+        tag_priority: &resolved.tag_priority,
     };
     let (out_commands, here_commands) = resolve_run_lists(&args, &resolved);
     watcher::watch_and_rebuild(opts, &out_commands, &here_commands, &build_env)
@@ -921,6 +956,224 @@ fn cmd_condition(args: ConditionArgs) -> Result<(), String> {
     Ok(())
 }
 
+// ---------- map ----------
+
+/// Split a `path:line` or `path:line:col` reference. Splits from the right, so
+/// a Windows drive letter (`C:\...`) isn't mistaken for the separator.
+fn parse_target(s: &str) -> Result<(PathBuf, u32), String> {
+    fn num_suffix(s: &str) -> Option<(&str, u32)> {
+        let i = s.rfind(':')?;
+        Some((&s[..i], s[i + 1..].parse().ok()?))
+    }
+    let (head, line) =
+        num_suffix(s).ok_or_else(|| format!("`{}` is not a FILE:LINE reference", s))?;
+    // With a column the trailing number is the column, so the line sits one
+    // separator further left.
+    match num_suffix(head) {
+        Some((path, line)) => Ok((PathBuf::from(path), line)),
+        None => Ok((PathBuf::from(head), line)),
+    }
+}
+
+/// Shortened for display: relative to the working directory when it's under it,
+/// which also keeps terminal file links clickable.
+fn display_path(p: &Path) -> String {
+    let shown = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| p.strip_prefix(cwd).ok().map(Path::to_path_buf))
+        .unwrap_or_else(|| p.to_path_buf())
+        .display()
+        .to_string();
+    // A reference typed with `/` joins onto roots discovered with `\`, so a
+    // path can come out mixed. Both work on Windows, but only one looks right.
+    #[cfg(windows)]
+    return shown.replace('/', "\\");
+    #[cfg(not(windows))]
+    shown
+}
+
+#[derive(serde::Serialize)]
+struct MapHitJson {
+    direction: &'static str,
+    from: String,
+    from_line: u32,
+    to: String,
+    to_line: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+}
+
+fn cmd_map(args: MapArgs) -> Result<(), String> {
+    // Any path we were handed tells us which build to look at; failing that,
+    // the working directory does.
+    let hint = args
+        .build
+        .clone()
+        .or_else(|| args.list.clone())
+        .or_else(|| {
+            args.targets
+                .first()
+                .and_then(|t| parse_target(t).ok())
+                .map(|(p, _)| p)
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let tr = match &args.build {
+        Some(dir) => Trace::open_build(dir)?,
+        None => Trace::open(&hint, args.profile.as_deref())?,
+    };
+
+    if let Some(file) = &args.list {
+        return cmd_map_list(&tr, file, args.json);
+    }
+    if args.stdin {
+        return cmd_map_stdin(&tr);
+    }
+    if args.targets.is_empty() {
+        return Err("nothing to map - pass FILE:LINE, --stdin, or --list FILE".into());
+    }
+
+    let mut hits: Vec<MapHitJson> = Vec::new();
+    let mut resolved = 0usize;
+    let mut failures = 0usize;
+    for target in &args.targets {
+        let hit = match parse_target(target).and_then(|(p, l)| tr.resolve(&p, l)) {
+            Ok(h) => h,
+            Err(e) => {
+                failures += 1;
+                eprintln!("{} {}", paint_error("error:"), e);
+                continue;
+            }
+        };
+        let from = display_path(&match hit.direction {
+            Direction::ToSource => tr.output_root.join(&hit.from),
+            Direction::ToOutput => tr.input_root.join(&hit.from),
+        });
+        let to = display_path(&hit.to_abs(&tr));
+        resolved += 1;
+        if args.json {
+            hits.push(MapHitJson {
+                direction: match hit.direction {
+                    Direction::ToSource => "to-source",
+                    Direction::ToOutput => "to-output",
+                },
+                from,
+                from_line: hit.from_line,
+                to,
+                to_line: hit.to_line,
+                note: hit.note,
+            });
+        } else {
+            println!(
+                "{}:{}  ->  {}",
+                from,
+                hit.from_line,
+                paint_success(&format!("{}:{}", to, hit.to_line))
+            );
+            if let Some(note) = &hit.note {
+                println!("  {} {}", paint_warning("note:"), note);
+            }
+        }
+    }
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&hits).map_err(|e| e.to_string())?
+        );
+    }
+    // Partial success is still success — the per-reference errors above already
+    // said which ones failed.
+    if failures > 0 && resolved == 0 {
+        return Err(format!("{} reference(s) could not be mapped", failures));
+    }
+    Ok(())
+}
+
+fn cmd_map_stdin(tr: &Trace) -> Result<(), String> {
+    use std::io::Read;
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|e| format!("reading stdin: {}", e))?;
+    // Anything that doesn't resolve is passed through untouched, so piping
+    // arbitrary tool output through this is lossless.
+    let out = linemap::rewrite(&text, |path, line| {
+        let hit = tr.resolve(Path::new(path), line).ok()?;
+        Some((display_path(&hit.to_abs(tr)), hit.to_line))
+    });
+    print!("{}", out);
+    Ok(())
+}
+
+fn cmd_map_list(tr: &Trace, file: &Path, json: bool) -> Result<(), String> {
+    let (_, rel) = tr.classify(file).ok_or_else(|| {
+        format!(
+            "{} is in neither {} nor {}",
+            file.display(),
+            tr.output_root.display(),
+            tr.input_root.display()
+        )
+    })?;
+    let runs = tr.runs(&rel)?;
+    let source = display_path(&tr.source_for(&rel)?);
+    let output = display_path(&tr.output_root.join(&rel));
+
+    if json {
+        #[derive(serde::Serialize)]
+        struct ListJson<'a> {
+            source: &'a str,
+            output: &'a str,
+            output_lines: u32,
+            runs: &'a [linemap::Run],
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ListJson {
+                source: &source,
+                output: &output,
+                output_lines: linemap::output_len(&runs),
+                runs: &runs,
+            })
+            .map_err(|e| e.to_string())?
+        );
+        return Ok(());
+    }
+
+    println!("{}  ->  {}", source, output);
+    if runs.is_empty() {
+        println!("  {}", paint_warning("nothing survives this filter"));
+        return Ok(());
+    }
+    let mut prev_src_end = 0u32;
+    for r in &runs {
+        let [out_start, src_start, len] = *r;
+        let gap = src_start - prev_src_end - 1;
+        if gap > 0 {
+            println!(
+                "  {}",
+                paint_warning(&format!(
+                    "source {}-{} stripped ({} line{})",
+                    prev_src_end + 1,
+                    src_start - 1,
+                    gap,
+                    if gap == 1 { "" } else { "s" }
+                ))
+            );
+        }
+        println!(
+            "  source {}-{}  ->  output {}-{}",
+            src_start,
+            src_start + len - 1,
+            out_start,
+            out_start + len - 1
+        );
+        prev_src_end = src_start + len - 1;
+    }
+    println!("  {} output lines", linemap::output_len(&runs));
+    Ok(())
+}
+
 /// Split post-build commands into the two lists and their working directories:
 /// `(run_in_output, run_in_invocation_dir)`.
 ///
@@ -1107,4 +1360,35 @@ fn paint_warning(s: &str) -> String {
 }
 fn paint_success(s: &str) -> String {
     paint(s, "32;1")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_a_plain_file_line_reference() {
+        let (p, l) = parse_target("src/a.rs:57").unwrap();
+        assert_eq!((p.to_str().unwrap(), l), ("src/a.rs", 57));
+    }
+
+    #[test]
+    fn drops_the_column_from_a_three_part_reference() {
+        let (p, l) = parse_target("src/a.rs:57:9").unwrap();
+        assert_eq!((p.to_str().unwrap(), l), ("src/a.rs", 57));
+    }
+
+    #[test]
+    fn keeps_a_windows_drive_letter_out_of_the_split() {
+        let (p, l) = parse_target(r"C:\proj\a.rs:57").unwrap();
+        assert_eq!((p.to_str().unwrap(), l), (r"C:\proj\a.rs", 57));
+        let (p, l) = parse_target(r"C:\proj\a.rs:57:9").unwrap();
+        assert_eq!((p.to_str().unwrap(), l), (r"C:\proj\a.rs", 57));
+    }
+
+    #[test]
+    fn rejects_a_reference_with_no_line_number() {
+        assert!(parse_target("src/a.rs").is_err());
+        assert!(parse_target("src/a.rs:nope").is_err());
+    }
 }
