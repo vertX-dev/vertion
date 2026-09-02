@@ -1,6 +1,6 @@
 [package]
 name = "vertion"
-version = "0.2.0"
+version = "1.0.0"
 edition = "2021"
 authors = ["vertX"]
 description = "Filter source files by version markers and emit a per-version build tree."
@@ -11,6 +11,10 @@ homepage = "https://github.com/vertX-dev/vertion"
 keywords = ["versioning", "build", "preprocessor", "cli", "source-filter"]
 categories = ["command-line-utilities", "development-tools::build-utils"]
 rust-version = "1.74"
+# The VSCode extension ships through the marketplace, not crates.io. Without
+# this the whole `editor/` tree (including a 150 KB package-lock.json) lands
+# inside the published crate.
+exclude = ["editor/", ".github/", "package-lock.json"]
 
 [[bin]]
 name = "vertion"
