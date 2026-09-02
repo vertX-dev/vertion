@@ -728,6 +728,12 @@ The `--run-here` **flag** is a blanket override for one invocation: it moves the
 
 Every spawned command receives the build's facts as environment variables — see [§5.11](#511-build-environment-vertion_).
 
+> [!WARNING]
+> These commands are arbitrary shell. A `vertion.cfg` that arrived with a
+> cloned repository can run anything the moment you type `vertion build`.
+> Read it first — the same rule you already apply to a `Makefile`. See
+> [SECURITY.md](SECURITY.md).
+
 ### 5.11. Build environment (`VERTION_*`)
 
 Every command Vertion spawns — profile `run`, CLI `--run`, and `[conditions.NAME].cmd` probes — gets the build's facts as environment variables. This is what lets a downstream tool locate the tree Vertion just produced without the version being written down twice:
@@ -832,6 +838,12 @@ The leading `-` is only needed when something precedes, so a stem may start with
 Named booleans that gate marker tags (`[stable{imagesInStable}]`). Definitions live in `[conditions.NAME]` tables in the project config and/or the user-level global config; see [§1](#conditionsname) for the field-level schema and [§4.13](#413-vertion-condition) for the CLI.
 
 **Resolution happens once per build**, before any file is processed — so a `cmd` condition runs exactly one time regardless of project size, and every marker in the build sees a consistent value. `cmd` conditions run in the project root with their output captured and discarded; a command that fails to spawn resolves to `false`.
+
+> [!WARNING]
+> A `cmd` condition is arbitrary shell, and `build` is not the only thing
+> that runs it: `vertion condition --list` and `vertion condition --hooks`
+> resolve probes as well, so both execute code from the config despite
+> building nothing. See [SECURITY.md](SECURITY.md).
 
 Three ways to drive a condition:
 

@@ -221,6 +221,15 @@ Use a profile with `--profile prod`. `--auto` increments `[project].version` aft
 
 > The config file is `vertion.cfg` (TOML syntax). A legacy `vertion.toml` is still read and written back to if present, so existing projects keep working — rename it to `vertion.cfg` when convenient.
 
+> [!WARNING]
+> **`vertion.cfg` is executable configuration.** The `run`, `run_here`, and
+> `[conditions.*].cmd` fields are handed to `cmd /C` (Windows) or `sh -c`
+> (elsewhere). Running `vertion build` inside a repository you did not write
+> runs whatever that repository's config says — as does `vertion condition
+> --list`, which resolves `cmd` probes without building anything. Read a
+> `vertion.cfg` before you run it, exactly as you would a `Makefile`.
+> See [SECURITY.md](SECURITY.md).
+
 ## Debugging a build (`vertion map`)
 
 Stripping a version block shifts every line below it, so a line number from a
@@ -299,6 +308,19 @@ Other things that help on any OS:
 
 - Build to a local SSD — not a network share, HDD, or sync folder (OneDrive, Dropbox, Google Drive all hook file writes and add overhead similar to Defender).
 - Keep `--ignore` lists tight so Vertion doesn't walk huge dependency trees (`node_modules`, `target`, `.git`, etc.).
+
+## Security
+
+Vertion runs commands its config file specifies: `run`, `run_here`, and
+`[conditions.*].cmd`. That is deliberate — it is what makes post-build
+packaging and environment probes work — but it means a `vertion.cfg` is as
+powerful as a `Makefile` and deserves the same caution when it arrives from
+someone else. Markers inside source files are only ever data, and never
+reach a shell.
+
+To report a vulnerability, open a [private advisory](https://github.com/vertX-dev/vertion/security/advisories/new).
+The full policy, including what does and does not count, is in
+[SECURITY.md](SECURITY.md).
 
 ## Development
 

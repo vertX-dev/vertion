@@ -1,0 +1,145 @@
+name: Release
+
+# Tag a release with `git tag v1.0.0 && git push --tags`. This builds the
+# binaries and attaches them to a DRAFT release for review — nothing is
+# published to crates.io or the marketplace here. Those stay manual:
+#   cargo publish
+#   cd editor/vscode && npx vsce publish
+on:
+  push:
+    tags: ["v*"]
+  # Lets you exercise the build without cutting a tag; the upload step is
+  # skipped unless a tag triggered the run.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify:
+    name: Verify tag matches Cargo.toml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compare tag against the manifest version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          # Dependencies declare their versions inside inline tables, so only the
+          # [package] version sits at the start of a line.
+          manifest=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          tag=${GITHUB_REF_NAME#v}
+          echo "Cargo.toml: $manifest"
+          echo "tag:        $tag"
+          if [ "$manifest" != "$tag" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $manifest"
+            exit 1
+          fi
+
+  build:
+    name: ${{ matrix.target }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          # Statically linked, so it runs on distros older than the builder.
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            packages: musl-tools
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        if: matrix.packages
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          staging="vertion-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir "$staging"
+          cp "target/${{ matrix.target }}/release/vertion" "$staging/"
+          cp README.md DOCS.md CHANGELOG.md LICENSE "$staging/"
+          tar czf "$staging.tar.gz" "$staging"
+          shasum -a 256 "$staging.tar.gz" > "$staging.tar.gz.sha256"
+          echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
+          echo "CHECKSUM=$staging.tar.gz.sha256" >> "$GITHUB_ENV"
+
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $staging = "vertion-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          New-Item -ItemType Directory $staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/vertion.exe" $staging
+          Copy-Item README.md,DOCS.md,CHANGELOG.md,LICENSE $staging
+          Compress-Archive -Path $staging -DestinationPath "$staging.zip"
+          (Get-FileHash "$staging.zip" -Algorithm SHA256).Hash |
+            Out-File -FilePath "$staging.zip.sha256" -Encoding ascii
+          "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "CHECKSUM=$staging.zip.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Attach to the draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.CHECKSUM }}
+
+  extension:
+    name: Package the VSCode extension
+    needs: verify
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editor/vscode
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+      # `vsce package` runs vscode:prepublish, so this compiles from source
+      # rather than trusting whatever out/ contains.
+      - name: Package
+        run: npx vsce package
+
+      - name: Attach the vsix to the draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: editor/vscode/*.vsix

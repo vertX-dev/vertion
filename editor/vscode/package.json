@@ -2,7 +2,7 @@
   "name": "vertion",
   "displayName": "Vertion",
   "description": "Syntax highlighting, auto-close, rename pair, folding, and snippets for Vertion version markers.",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "publisher": "vertx-dev",
   "license": "MIT",
   "engines": {
@@ -49,6 +49,15 @@
     "onLanguage:perl",
     "onLanguage:r"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Marker highlighting, folding, snippets and the editing commands work everywhere. Commands that launch the vertion executable still run, but vertion.executablePath is machine-scoped and ignored from workspace settings, so an untrusted repository cannot point them at another binary.",
+      "restrictedConfigurations": [
+        "vertion.executablePath"
+      ]
+    }
+  },
   "contributes": {
     "grammars": [
       {
@@ -266,6 +275,7 @@
         },
         "vertion.executablePath": {
           "type": "string",
+          "scope": "machine",
           "default": "vertion",
           "description": "Path to the vertion executable, used to translate line numbers between a build output file and its source. Leave as `vertion` to find it on PATH."
         }
