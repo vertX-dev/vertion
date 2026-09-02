@@ -73,6 +73,9 @@ for the first time.
 - `SECURITY.md` documents that `run`, `run_here`, and `[conditions.*].cmd`
   execute arbitrary shell, and that `vertion condition --list` resolves probes
   without building. Markers in source files are data and never reach a shell.
+- Bumped `crossbeam-epoch` to 0.9.20, clearing RUSTSEC-2026-0204 (an invalid
+  pointer dereference reachable through `rayon`). CI now runs `cargo audit` on
+  every push and weekly.
 
 ### Requirements
 
