@@ -347,10 +347,15 @@ mod tests {
             normalize(Path::new("/a/b/../c")),
             PathBuf::from("/a").join("c")
         );
-        // …and a Windows prefix survives normalization.
-        let abs = normalize(Path::new(r"C:\a\.\b"));
-        assert_eq!(abs, PathBuf::from(r"C:\a\b"));
-        assert!(abs.is_absolute());
+        // …and a Windows prefix survives normalization. Only Windows splits
+        // `C:\a\.\b` into components; on other platforms it is one ordinary
+        // filename, so there is no `.` to fold and the path is not absolute.
+        #[cfg(windows)]
+        {
+            let abs = normalize(Path::new(r"C:\a\.\b"));
+            assert_eq!(abs, PathBuf::from(r"C:\a\b"));
+            assert!(abs.is_absolute());
+        }
     }
 
     #[test]
