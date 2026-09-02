@@ -74,6 +74,12 @@ for the first time.
   execute arbitrary shell, and that `vertion condition --list` resolves probes
   without building. Markers in source files are data and never reach a shell.
 
+### Requirements
+
+- Rust **1.85** or newer. Earlier releases claimed 1.74, but that was never
+  achievable: the dependency tree reaches edition-2024 crates, and the committed
+  lockfile is v4. The claim is now tested by CI rather than asserted.
+
 ### Packaging
 
 - The published crate excludes `editor/`, so the VSCode extension no longer

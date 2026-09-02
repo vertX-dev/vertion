@@ -97,7 +97,7 @@ fn latest_build_under(output_root: &Path) -> Option<PathBuf> {
             continue;
         };
         let Ok(mtime) = meta.modified() else { continue };
-        if best.as_ref().map_or(true, |(t, _)| mtime > *t) {
+        if best.as_ref().is_none_or(|(t, _)| mtime > *t) {
             best = Some((mtime, dir));
         }
     }

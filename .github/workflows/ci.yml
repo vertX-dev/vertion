@@ -5,6 +5,10 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  # Advisories get published without anyone pushing, so the audit needs a clock
+  # of its own rather than waiting for the next commit.
+  schedule:
+    - cron: "0 6 * * 1"
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,11 +39,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # `--locked` makes a stale or hand-edited Cargo.lock a build failure
+      # instead of something Cargo silently fixes up in CI only.
       - name: Build
-        run: cargo build --verbose
+        run: cargo build --locked --verbose
 
       - name: Test
-        run: cargo test --verbose
+        run: cargo test --locked --verbose
 
   lint:
     name: Format & clippy
@@ -56,4 +62,58 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  msrv:
+    name: MSRV (1.85)
+    runs-on: ubuntu-latest
+    # This job answers "does it still build on the version we advertise", not
+    # "is it lint-clean there" — an older compiler carries lints that have since
+    # been renamed or retired, and -D warnings would fail on those instead.
+    env:
+      RUSTFLAGS: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.85 (the rust-version in Cargo.toml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.85"
+
+      - name: Check
+        run: cargo check --locked --all-targets
+
+  extension:
+    name: VSCode extension
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: editor/vscode
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: editor/vscode/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Compile
+        run: npm run compile
+
+      - name: Test
+        run: npm test
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: taiki-e/install-action@cargo-audit
+
+      - name: cargo audit
+        run: cargo audit

@@ -10,7 +10,7 @@ repository = "https://github.com/vertX-dev/vertion"
 homepage = "https://github.com/vertX-dev/vertion"
 keywords = ["versioning", "build", "preprocessor", "cli", "source-filter"]
 categories = ["command-line-utilities", "development-tools::build-utils"]
-rust-version = "1.74"
+rust-version = "1.85"
 # The VSCode extension ships through the marketplace, not crates.io. Without
 # this the whole `editor/` tree (including a 150 KB package-lock.json) lands
 # inside the published crate.

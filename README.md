@@ -26,7 +26,7 @@ cargo build --release
 ./target/release/vertion --help
 ```
 
-Requires Rust **1.74** or newer.
+Requires Rust **1.85** or newer.
 
 ## Quick start
 
