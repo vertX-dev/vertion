@@ -8,6 +8,10 @@
 //! - [`config::detect_comment_style`] / [`config::CommentStyle`] — `//` vs `#` by extension
 //! - [`linemap`] — map filtered output line numbers back to source line numbers
 
+// The four modules below are this crate's entire published surface, so every
+// public item in them carries documentation that docs.rs will render.
+#![warn(missing_docs)]
+
 pub mod config;
 pub mod filter;
 pub mod linemap;

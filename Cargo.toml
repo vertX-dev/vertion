@@ -28,7 +28,14 @@ toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-notify = "6"
-notify-debouncer-mini = "0.4"
+# `notify` itself is not a direct dependency: the only item this crate needs
+# (`RecursiveMode`) comes through the debouncer's re-export, and naming both
+# invites two incompatible notify majors in one tree.
+notify-debouncer-mini = "0.7"
 rayon = "1.10"
 indicatif = "0.17"
+
+[dev-dependencies]
+assert_cmd = "2.2.2"
+predicates = "3.1.4"
+tempfile = "3.27.0"

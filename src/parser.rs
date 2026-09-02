@@ -1,3 +1,9 @@
+//! Recognising version markers and stripping the blocks that don't apply.
+//!
+//! [`detect_marker`] classifies a single line; [`process_file`] walks a whole
+//! file, keeping a stack of open blocks and emitting only the lines that pass
+//! the active filter.
+
 use crate::config::CommentStyle;
 use crate::filter::{parse_version, passes, passes_range_marker, tag_passes, FilterMode};
 
@@ -5,7 +11,9 @@ use crate::filter::{parse_version, passes, passes_range_marker, tag_passes, Filt
 /// or the negated `{!cond}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MarkerCondition {
+    /// The condition's name, as defined in a `[conditions.*]` table.
     pub name: String,
+    /// True for `{!name}`: the marker passes when the condition resolves false.
     pub negated: bool,
 }
 
@@ -95,6 +103,7 @@ fn parse_tag_entry(entry: &str) -> Result<(String, Vec<MarkerCondition>), String
     Ok((name.to_string(), conds))
 }
 
+/// A parsed marker: everything the line declared, before the filter sees it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Marker {
     /// First token: a version string like "1.2", or the literal "ALL"/"EXC".
@@ -102,6 +111,8 @@ pub struct Marker {
     pub version: String,
     /// Upper bound for range markers (`//version 1.3 2.0`). `None` for single-version markers.
     pub to: Option<String>,
+    /// Tags this marker is restricted to. Empty means untagged, which always
+    /// applies; a tagged marker ships only when one of its tags is active.
     pub tags: Vec<String>,
     /// Conditions attached to this marker's tags (`[stable{imagesInStable}]`).
     /// All of them must hold for the marker to pass.
@@ -137,6 +148,7 @@ impl Marker {
     }
 }
 
+/// What [`detect_marker`] made of a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MarkerKind {
     /// A versioned open or close marker; open vs close is decided by the stack at processing time.
@@ -160,8 +172,12 @@ const KEYWORD: &str = "version";
 
 /// Parse a single line and return its marker classification.
 ///
-/// Marker grammar (after the comment prefix and optional whitespace):
-///   `version` <ws> [<v1> [<ws> <v2>]] [<ws> `[tag1,tag2{cond},...]`] [<ws> `*`] <ws>*
+/// Marker grammar (after the comment prefix and optional whitespace). Fenced so
+/// rustdoc reads the angle brackets as text rather than as HTML tags:
+///
+/// ```text
+/// version <ws> [<v1> [<ws> <v2>]] [<ws> [tag1,tag2{cond},...]] [<ws> *] <ws>*
+/// ```
 ///
 /// Where:
 /// - `<v1>` is `ALL` / `EXC` (case-insensitive) or a semver-ish version. It may be
@@ -309,25 +325,38 @@ pub fn detect_marker(line: &str, style: CommentStyle) -> MarkerKind {
     }
 }
 
+/// The outcome of filtering one file, including everything the caller needs to
+/// report warnings or build a line map.
 #[derive(Debug, Default)]
 pub struct ProcessResult {
+    /// The surviving lines, in order, without trailing newlines.
     pub lines: Vec<String>,
     /// For each emitted line, the 1-based line it came from in the input.
     /// Parallel to `lines`, so `source_lines[i]` describes `lines[i]`. This is
     /// what lets a build-output line number be traced back to the source line
     /// that actually produced it (see `linemap`).
     pub source_lines: Vec<u32>,
+    /// Whether the file contained any marker at all. Files without one are
+    /// copied through verbatim rather than rewritten.
     pub had_markers: bool,
+    /// Markers left open at end of file, by version token.
     pub unclosed: Vec<String>,
+    /// How many lines the filter removed.
     pub stripped: usize,
+    /// Lines that looked like a marker but could not be parsed, as
+    /// `(1-based line, the line's text)`.
     pub malformed: Vec<(usize, String)>,
     /// Markers referencing a condition name that isn't defined anywhere.
     pub unknown_conditions: Vec<(usize, String)>,
 }
 
+/// Knobs for [`process_file`] beyond the version filter itself.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcessOptions<'a> {
+    /// Active tags. Empty admits only untagged blocks; `["*"]` admits every tag.
     pub tag_filter: &'a [String],
+    /// Under [`crate::filter::FilterMode::Extract`], keep the surrounding
+    /// untagged code as well as the extracted blocks.
     pub extract_preserve_context: bool,
     /// Strip whole-line comments (non-marker) from included output.
     pub strip_comments: bool,
@@ -348,6 +377,10 @@ fn is_line_comment(line: &str, style: CommentStyle) -> bool {
     line.trim_start().starts_with(style.prefix())
 }
 
+/// Filter one file's lines against `filter`, returning the surviving lines
+/// alongside the diagnostics gathered on the way.
+///
+/// `lines` should not carry trailing newlines, and neither will the result.
 pub fn process_file(
     lines: &[String],
     style: CommentStyle,

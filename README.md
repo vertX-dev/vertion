@@ -28,6 +28,34 @@ cargo build --release
 
 Requires Rust **1.85** or newer.
 
+## Editor support
+
+A VSCode extension lives in [`editor/vscode`](editor/vscode) and tracks the
+CLI's version:
+
+- Marker syntax highlighting, injected into the 21 languages Vertion supports
+- Matching-pair highlighting, folding, auto-close, and paired rename
+- Commands to wrap a selection in a version block, split a block by version, and
+  convert a file or folder into `.vertion.<target>/` variants
+- **Ctrl+K Ctrl+L** jumps between a build-output line and the source line it came
+  from — the editor front end for
+  [`vertion map`](#debugging-a-build-vertion-map)
+- A guard that warns before you edit a file inside a build tree, since the next
+  build overwrites it
+
+It is not on the Marketplace yet. Download the `.vsix` from a
+[release](https://github.com/vertX-dev/vertion/releases), or build it yourself:
+
+```sh
+cd editor/vscode
+npm install
+npm run package                              # writes vertion-<version>.vsix
+code --install-extension vertion-<version>.vsix
+```
+
+Settings and the full command list: [editor/vscode/README.md](editor/vscode/README.md).
+
+
 ## Quick start
 
 ```sh

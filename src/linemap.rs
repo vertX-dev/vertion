@@ -68,9 +68,13 @@ pub fn next_kept(runs: &[Run], src_line: u32) -> Option<(u32, u32)> {
 /// substituted without disturbing the punctuation around it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRef {
+    /// Byte range of the path within the scanned line.
     pub path_span: (usize, usize),
+    /// Byte range of the line number within the scanned line.
     pub line_span: (usize, usize),
+    /// The path exactly as it appeared.
     pub path: String,
+    /// The 1-based line number that followed it.
     pub line: u32,
 }
 

@@ -1,20 +1,36 @@
+//! Deciding which versions a build keeps.
+//!
+//! A [`FilterMode`] is the question every marker is asked: given this build's
+//! version selection, does the block survive? [`parse_filter`] builds one from
+//! the CLI's `-v` arguments, and [`passes`] applies it to a single marker.
+
 use semver::Version;
 use serde::{Deserialize, Serialize};
 
+/// One inclusive version span in an [`FilterMode::Include`] list.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IncludeEntry {
+    /// First version in the span, inclusive.
     pub from: Version,
+    /// Last version in the span, inclusive. Equal to `from` for a single version.
     pub to: Version,
 }
 
+/// Which versions a build keeps — the question every marker gets asked.
+///
 // Serializable so a build's exact filter can be recorded in the manifest and
 // replayed later by `vertion map`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FilterMode {
+    /// Everything up to and including this version. The default for `build -v X`.
     Cumulative(Version),
+    /// Everything from the first version to the second, inclusive.
     Range(Version, Version),
+    /// This version plus untagged base code only. Range markers are skipped entirely.
     Only(Version),
+    /// Only this version's own blocks, for `vertion extract`.
     Extract(Version),
+    /// A persisted list of non-contiguous spans, built up with `vertion include`.
     Include(Vec<IncludeEntry>),
 }
 
@@ -42,6 +58,7 @@ impl FilterMode {
         }
     }
 
+    /// Short lowercase name of the mode, as written to the build manifest.
     pub fn name(&self) -> &'static str {
         match self {
             FilterMode::Cumulative(_) => "cumulative",
@@ -132,14 +149,20 @@ pub fn remove_include_entry(
     )))
 }
 
+/// Which semver field `--auto` advances after a successful build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IncrementLevel {
+    /// `1.2.3` becomes `2.0.0`.
     Major,
+    /// `1.2.3` becomes `1.3.0`.
     Minor,
+    /// `1.2.3` becomes `1.2.4`.
     Patch,
 }
 
 impl IncrementLevel {
+    /// Parse `"major"`, `"minor"` or `"patch"`, case-insensitively.
+    /// Returns `None` for anything else.
     pub fn parse(s: &str) -> Option<IncrementLevel> {
         match s.to_ascii_lowercase().as_str() {
             "major" => Some(IncrementLevel::Major),
@@ -149,6 +172,7 @@ impl IncrementLevel {
         }
     }
 
+    /// The lowercase name this level is written as in `vertion.cfg`.
     pub fn as_str(&self) -> &'static str {
         match self {
             IncrementLevel::Major => "major",
@@ -158,6 +182,7 @@ impl IncrementLevel {
     }
 }
 
+/// Advance `version` by one step at `level`, zeroing the fields below it.
 pub fn autoincrement(version: &Version, level: IncrementLevel) -> Version {
     match level {
         IncrementLevel::Major => Version::new(version.major + 1, 0, 0),
@@ -166,6 +191,8 @@ pub fn autoincrement(version: &Version, level: IncrementLevel) -> Version {
     }
 }
 
+/// A version or filter argument that could not be parsed. The payload is the
+/// message shown to the user.
 #[derive(Debug)]
 pub struct FilterError(pub String);
 
@@ -177,6 +204,8 @@ impl std::fmt::Display for FilterError {
 
 impl std::error::Error for FilterError {}
 
+/// Parse a version, padding a partial one out to full semver: `1` becomes
+/// `1.0.0` and `1.2` becomes `1.2.0`, so markers can be written the short way.
 pub fn parse_version(s: &str) -> Result<Version, FilterError> {
     let s = s.trim();
     let dots = s.bytes().filter(|b| *b == b'.').count();
@@ -188,6 +217,10 @@ pub fn parse_version(s: &str) -> Result<Version, FilterError> {
     Version::parse(&padded).map_err(|e| FilterError(format!("invalid version `{}`: {}", s, e)))
 }
 
+/// Build a [`FilterMode`] from the CLI's `-v` arguments.
+///
+/// One argument is cumulative; two are a range, unless the second is the literal
+/// `ONLY` (case-insensitive), which pins the build to the first version alone.
 pub fn parse_filter(args: &[String]) -> Result<FilterMode, FilterError> {
     match args.len() {
         1 => Ok(FilterMode::Cumulative(parse_version(&args[0])?)),
@@ -262,6 +295,7 @@ pub fn passes(
 }
 
 // Back-compat helper for code paths that don't care about tags.
+/// [`passes`] for callers with no tags or conditions to apply.
 #[allow(dead_code)]
 pub fn passes_filter(version_token: &str, mode: &FilterMode) -> bool {
     passes(version_token, &[], mode, &[])
