@@ -10,7 +10,13 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "sourceMap": true
+    "sourceMap": true,
+    // TypeScript 7 stopped pulling in every @types/* package implicitly, so
+    // the ones actually used have to be named. `vscode` belongs here even
+    // though it is imported by name: @types/vscode is an ambient
+    // `declare module "vscode"`, which is only visible once the package is
+    // included in the compilation.
+    "types": ["node", "vscode"]
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "out", "tests", "**/*.test.ts"]
