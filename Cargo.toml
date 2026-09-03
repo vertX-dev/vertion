@@ -14,7 +14,7 @@ rust-version = "1.85"
 # The VSCode extension ships through the marketplace, not crates.io. Without
 # this the whole `editor/` tree (including a 150 KB package-lock.json) lands
 # inside the published crate.
-exclude = ["editor/", ".github/", "package-lock.json"]
+exclude = ["editor/", ".github/", "dist/", "package-lock.json"]
 
 [[bin]]
 name = "vertion"
@@ -34,8 +34,21 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 notify-debouncer-mini = "0.7"
 rayon = "1.10"
 indicatif = "0.17"
+clap_complete = "4.6.9"
+clap_mangen = "0.3.3"
 
 [dev-dependencies]
 assert_cmd = "2.2.2"
 predicates = "3.1.4"
 tempfile = "3.27.0"
+
+# `cargo binstall vertion` fetches a prebuilt archive from the GitHub release
+# instead of compiling. The paths below must match the asset names produced by
+# .github/workflows/release.yml — change one, change the other.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.{ archive-format }"
+bin-dir = "{ name }-v{ version }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"

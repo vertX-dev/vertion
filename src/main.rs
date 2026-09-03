@@ -117,6 +117,20 @@ enum Command {
     /// Translate line numbers between a build output and its source
     #[command(visible_alias = "m")]
     Map(MapArgs),
+    /// Print a shell completion script to stdout
+    ///
+    /// Generated from the same command tree the parser uses, so it can never
+    /// drift from the actual flags. See `--help` for where each shell wants it.
+    Completions {
+        /// Shell to generate for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Print a roff man page to stdout
+    ///
+    /// `vertion man > vertion.1`, then install it wherever your system keeps
+    /// section-1 pages (often `/usr/local/share/man/man1`).
+    Man,
 }
 
 /// `vertion map` — because stripping a block shifts every line below it, a line
@@ -306,7 +320,25 @@ fn run() -> Result<(), String> {
         Command::Include(args) => cmd_include(args),
         Command::Condition(args) => cmd_condition(args),
         Command::Map(args) => cmd_map(args),
+        Command::Completions { shell } => cmd_completions(shell),
+        Command::Man => cmd_man(),
     }
+}
+
+/// Write a completion script for `shell` to stdout.
+fn cmd_completions(shell: clap_complete::Shell) -> Result<(), String> {
+    let mut cmd = <Cli as clap::CommandFactory>::command();
+    let name = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+    Ok(())
+}
+
+/// Write a roff man page for the whole command tree to stdout.
+fn cmd_man() -> Result<(), String> {
+    let cmd = <Cli as clap::CommandFactory>::command();
+    clap_mangen::Man::new(cmd)
+        .render(&mut std::io::stdout())
+        .map_err(|e| format!("writing man page: {}", e))
 }
 
 enum BuildKind {

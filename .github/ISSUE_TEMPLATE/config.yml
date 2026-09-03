@@ -1,0 +1,10 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/vertX-dev/vertion/security/advisories/new
+    about: >-
+      Report privately, never as a public issue. Note that a config file running
+      shell commands is documented, intended behaviour.
+  - name: Question or idea
+    url: https://github.com/vertX-dev/vertion/discussions
+    about: For anything that isn't yet a bug report or a concrete proposal.

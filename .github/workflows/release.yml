@@ -112,6 +112,46 @@ jobs:
             ${{ env.ASSET }}
             ${{ env.CHECKSUM }}
 
+  completions:
+    name: Shell completions & man page
+    needs: verify
+    runs-on: ubuntu-latest
+    # Both are generated from the same clap command tree on every platform, so
+    # they are built once here rather than five times in the matrix. Doing it
+    # per-target would also mean running a cross-compiled binary, which the
+    # x86_64 macOS build cannot do on an arm64 runner.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Generate
+        run: |
+          staging="vertion-${GITHUB_REF_NAME}-completions"
+          mkdir -p "$staging/completions"
+          for sh in bash zsh fish powershell elvish; do
+            ./target/release/vertion completions "$sh" > "$staging/completions/vertion.$sh"
+          done
+          ./target/release/vertion man > "$staging/vertion.1"
+          cp README.md LICENSE "$staging/"
+          tar czf "$staging.tar.gz" "$staging"
+          shasum -a 256 "$staging.tar.gz" > "$staging.tar.gz.sha256"
+          echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
+          echo "CHECKSUM=$staging.tar.gz.sha256" >> "$GITHUB_ENV"
+
+      - name: Attach to the draft release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.CHECKSUM }}
+
   extension:
     name: Package the VSCode extension
     needs: verify

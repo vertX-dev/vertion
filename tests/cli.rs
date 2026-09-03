@@ -199,6 +199,51 @@ fn show_reports_the_version_blocks() {
         .stdout(contains("2.0"));
 }
 
+// ------------------------------------------------------- completions & man
+
+#[test]
+fn completions_generate_for_every_supported_shell() {
+    let tmp = TempDir::new().unwrap();
+    for shell in ["bash", "zsh", "fish", "powershell", "elvish"] {
+        let out = vertion(tmp.path())
+            .args(["completions", shell])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let script = String::from_utf8(out).expect("utf-8 script");
+        assert!(
+            script.contains("vertion"),
+            "{shell} script names the binary"
+        );
+        assert!(script.len() > 200, "{shell} script is not a stub");
+    }
+}
+
+#[test]
+fn an_unknown_shell_is_rejected() {
+    let tmp = TempDir::new().unwrap();
+    vertion(tmp.path())
+        .args(["completions", "tcsh"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn man_page_renders_with_the_right_header() {
+    let tmp = TempDir::new().unwrap();
+    vertion(tmp.path())
+        .arg("man")
+        .assert()
+        .success()
+        // `.TH <name> <section>` is the roff title line; getting it means the
+        // page is well-formed rather than just non-empty.
+        .stdout(contains(".TH vertion 1"))
+        .stdout(contains(env!("CARGO_PKG_VERSION")))
+        .stdout(contains("SYNOPSIS"));
+}
+
 // ------------------------------------------------------------------ map
 
 #[test]

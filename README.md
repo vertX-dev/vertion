@@ -9,6 +9,24 @@ A CLI tool that filters source files by version markers and writes a build tree 
 
 ## Install
 
+### Prebuilt binaries
+
+Every release attaches archives for Linux (glibc and static musl), macOS
+(Apple silicon and Intel), and Windows, each with a `.sha256` alongside it.
+Download one from [Releases](https://github.com/vertX-dev/vertion/releases), or
+let a package manager do it:
+
+```sh
+cargo binstall vertion       # no compile; fetches the release archive
+brew install vertX-dev/tap/vertion
+scoop install vertion
+```
+
+> [!NOTE]
+> These land as the first release is published. Until then, build from source.
+> The Homebrew and Scoop manifests live in [`dist/`](dist) and need a tap and a
+> bucket repository respectively — see [dist/README.md](dist/README.md).
+
 ### From source
 
 ```sh
@@ -27,6 +45,22 @@ cargo build --release
 ```
 
 Requires Rust **1.85** or newer.
+
+### Shell completions and a man page
+
+Both are generated from the same command tree the parser uses, so they cannot
+drift from the real flags. Release archives ship them prebuilt; to produce them
+yourself:
+
+```sh
+vertion completions bash > /etc/bash_completion.d/vertion
+vertion completions zsh  > ~/.zsh/completions/_vertion
+vertion completions fish > ~/.config/fish/completions/vertion.fish
+vertion man              > /usr/local/share/man/man1/vertion.1
+```
+
+`powershell` and `elvish` are supported too. For PowerShell, append the output
+to your `$PROFILE`.
 
 ## Editor support
 

@@ -50,6 +50,10 @@ for the first time.
 - `build`, `last`, `extract`, `watch` — produce a filtered tree.
 - `show`, `graph`, `validate`, `stats` — inspect markers without building.
 - `init`, `include`, `condition` — manage configuration.
+- `completions <shell>` and `man` — generate a shell completion script
+  (bash, zsh, fish, PowerShell, elvish) or a roff man page. Both are derived
+  from the same command tree the parser uses, so neither can drift from the
+  real flags. Release archives ship them prebuilt.
 - `map` — translate a line number between a build output file and its source,
   in either direction. Accepts `FILE:LINE`, `FILE:LINE:COL`, `--stdin` for
   piping a compiler or runtime stack trace through, and `--list`. The mapping is
@@ -87,6 +91,8 @@ for the first time.
 
 - The published crate excludes `editor/`, so the VSCode extension no longer
   ships inside it.
+- `cargo binstall vertion` fetches a prebuilt release archive instead of
+  compiling. Homebrew and Scoop manifests are templated in `dist/`.
 
 [Unreleased]: https://github.com/vertX-dev/vertion/compare/v1.0.0...HEAD
 [1.0.0]: https://github.com/vertX-dev/vertion/releases/tag/v1.0.0

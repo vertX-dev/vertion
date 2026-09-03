@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # Cargo.lock is committed and CI builds with --locked, so a dependency that
+  # drifts is a build failure rather than something that silently rots.
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "rust"]
+    groups:
+      # Patch bumps are noise one at a time; batch them into a single PR.
+      rust-patches:
+        update-types: ["patch"]
+
+  - package-ecosystem: npm
+    directory: "/editor/vscode"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels: ["dependencies", "extension"]
+    groups:
+      npm-patches:
+        update-types: ["patch", "minor"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    labels: ["dependencies", "ci"]

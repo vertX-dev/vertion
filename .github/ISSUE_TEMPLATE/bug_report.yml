@@ -1,0 +1,70 @@
+name: Bug report
+description: Something behaves differently from what the docs say
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: if this is a **security** problem, please don't post it
+        here — see [SECURITY.md](https://github.com/vertX-dev/vertion/blob/main/SECURITY.md).
+
+        Note that `vertion.cfg` running shell commands (`run`, `run_here`,
+        `[conditions.*].cmd`) is intended behaviour, documented in SECURITY.md.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `vertion --version`.
+      placeholder: vertion 1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - macOS
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: component
+    attributes:
+      label: Where does it happen?
+      description: Which command, or the VSCode extension.
+      placeholder: "vertion build, or: the VSCode extension"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: |
+        The smallest thing that shows the problem. A `vertion.cfg`, one source
+        file with its markers, and the exact command you ran is usually enough.
+
+        Marker bugs depend on exact whitespace, so please paste rather than
+        retype.
+      render: text
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Anything Vertion printed, including the error text.
+      render: text
