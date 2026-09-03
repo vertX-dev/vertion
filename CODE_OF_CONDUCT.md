@@ -45,10 +45,6 @@ To report a problem, contact the maintainers privately rather than raising it in
 a public thread. On GitHub you can do this by messaging
 [@vertX-dev](https://github.com/vertX-dev) directly.
 
-<!-- If you would rather take reports by email, add the address here. A
-     dedicated alias is worth setting up: anything written in this file is
-     public and will be scraped. -->
-
 Reports will be handled discreetly. Someone reporting a problem should not end
 up worse off for having reported it.
 
