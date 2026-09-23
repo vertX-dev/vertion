@@ -131,6 +131,49 @@ fn build_keeps_the_target_version_and_strips_the_rest() {
 }
 
 #[test]
+fn build_writes_only_the_last_table_into_the_config() {
+    // Hand-written, CRLF, commented, aligned, profiles out of alphabetical order.
+    let hand_written = "\
+# Hand-maintained. `[last]` is written automatically after every build.
+
+[project]
+version    = \"1.0.0\"   # bumped by hand
+input      = \"./src\"
+output     = \"./build\"
+
+[profiles.zeta]
+output = \"./build/zeta\"
+
+[profiles.alpha]
+output = \"./build/alpha\"
+"
+    .replace('\n', "\r\n");
+    let tmp = project();
+    fs::write(tmp.path().join("vertion.cfg"), &hand_written).unwrap();
+
+    vertion(tmp.path())
+        .args(["build", "-v", "1.0", "--no-progress"])
+        .assert()
+        .success();
+
+    let after = fs::read_to_string(tmp.path().join("vertion.cfg")).unwrap();
+    let added = after
+        .strip_prefix(hand_written.as_str())
+        .unwrap_or_else(|| panic!("existing config rewritten:\n{after}"));
+    assert!(added.starts_with("\r\n[last]\r\n"), "{added:?}");
+    assert!(
+        !added.replace("\r\n", "").contains('\n'),
+        "LF in a CRLF file: {added:?}"
+    );
+    // Two brackets: the `[last]` header and its `tags = []`.
+    assert_eq!(
+        added.matches('[').count(),
+        2,
+        "only [last] added: {added:?}"
+    );
+}
+
+#[test]
 fn a_later_build_is_cumulative() {
     let tmp = project();
     vertion(tmp.path())

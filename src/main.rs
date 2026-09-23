@@ -879,7 +879,7 @@ fn cmd_condition(args: ConditionArgs) -> Result<(), String> {
         }
 
         if args.global_file {
-            let mut g = settings::load_global().map_err(|e| e.to_string())?;
+            let g = settings::load_global().map_err(|e| e.to_string())?;
             if adding && g.conditions.contains_key(&name) {
                 return Err(format!("global condition `{}` already exists", name));
             }
@@ -894,8 +894,8 @@ fn cmd_condition(args: ConditionArgs) -> Result<(), String> {
                     return Err("global conditions cannot reference another global".into());
                 }
             }
-            g.conditions.insert(name.clone(), def);
-            let p = settings::save_global(&g).map_err(|e| e.to_string())?;
+            let p =
+                settings::save_global_condition(&name, Some(&def)).map_err(|e| e.to_string())?;
             println!(
                 "{} global condition `{}` in {}",
                 if adding { "Added" } else { "Updated" },
@@ -905,7 +905,7 @@ fn cmd_condition(args: ConditionArgs) -> Result<(), String> {
             return Ok(());
         }
 
-        let mut cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
+        let cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
         if adding && cfg.conditions.contains_key(&name) {
             return Err(format!("condition `{}` already exists", name));
         }
@@ -917,8 +917,7 @@ fn cmd_condition(args: ConditionArgs) -> Result<(), String> {
                 return Err("--set needs one of --bool, --cmd, --global-ref".into());
             }
         }
-        cfg.conditions.insert(name.clone(), def);
-        settings::save(&cfg, project_root).map_err(|e| e.to_string())?;
+        settings::save_condition(project_root, &name, Some(&def)).map_err(|e| e.to_string())?;
         println!(
             "{} condition `{}`",
             if adding { "Added" } else { "Updated" },
@@ -929,17 +928,17 @@ fn cmd_condition(args: ConditionArgs) -> Result<(), String> {
 
     if let Some(name) = args.remove {
         if args.global_file {
-            let mut g = settings::load_global().map_err(|e| e.to_string())?;
-            if g.conditions.remove(&name).is_none() {
+            let g = settings::load_global().map_err(|e| e.to_string())?;
+            if !g.conditions.contains_key(&name) {
                 return Err(format!("no global condition `{}`", name));
             }
-            settings::save_global(&g).map_err(|e| e.to_string())?;
+            settings::save_global_condition(&name, None).map_err(|e| e.to_string())?;
         } else {
-            let mut cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
-            if cfg.conditions.remove(&name).is_none() {
+            let cfg = load_or_default(project_root).map_err(|e| e.to_string())?;
+            if !cfg.conditions.contains_key(&name) {
                 return Err(format!("no condition `{}`", name));
             }
-            settings::save(&cfg, project_root).map_err(|e| e.to_string())?;
+            settings::save_condition(project_root, &name, None).map_err(|e| e.to_string())?;
         }
         println!("Removed condition `{}`", name);
         return Ok(());

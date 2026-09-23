@@ -10,7 +10,12 @@ The VSCode extension has its own changelog:
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- `vertion build` (and `last`, `--auto`, `vertion include`, `vertion condition`)
+  no longer re-serialises `vertion.cfg`. Each command now edits only the keys it
+  owns: comments, alignment, table order and CRLF line endings are kept, and
+  defaults such as `include = []` are no longer written into the file.
 
 ## [1.0.0] — 2026-09-02
 

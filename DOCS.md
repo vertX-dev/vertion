@@ -117,7 +117,7 @@ bool = true
 
 ### `[last]` (auto-written, read by `vertion last`)
 
-Written after every successful `build`/`last`. You normally don't hand-edit this.
+Written after every successful `build`/`last`. You normally don't hand-edit this. Only this table is rewritten — the rest of `vertion.cfg` keeps its comments, spacing, order and line endings; when the table is missing it is added after the last table in the file.
 
 **Gotcha:** `vertion last` does **not** automatically reapply `[last].profile` — it only records which profile was used for reference. Pass `-p <name>` again on the `last` invocation if you want the same profile; otherwise `last` resolves paths from bare `[project]` (or whichever `-p` you pass this time). `tags` and `dev` **are** restored automatically when the corresponding CLI flag isn't given; `wrap`/`wrap_name` are also restored automatically unless `--wrap` is passed explicitly on the `last` invocation or a profile is in effect.
 
@@ -540,7 +540,7 @@ Manages `[[include]]`. Exactly one mode per invocation:
 | `vertion include --show` / `-s` | List all saved entries (`from` alone if `from == to`, else `from → to`) |
 | `vertion include --remove FROM TO` / `-r FROM TO` | Exact match on `(FROM, TO)` deletes the entry. If `FROM` matches an entry's `from` and `TO` falls inside it, the entry is trimmed (`from` moves up to `TO`) instead of deleted. Otherwise errors — no partial match. |
 
-Adding a duplicate of an existing entry is a no-op (reported, not an error). Every add/remove rewrites the whole `[[include]]` array in `vertion.cfg`.
+Adding a duplicate of an existing entry is a no-op (reported, not an error). Add/remove touch only the affected `[[include]]` entry; the rest of `vertion.cfg` (comments, spacing, order) is left as written.
 
 ### 4.13. `vertion condition`
 
