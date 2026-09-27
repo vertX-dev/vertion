@@ -10,6 +10,26 @@ The VSCode extension has its own changelog:
 
 ## [Unreleased]
 
+### Added
+
+- `[[files]]` entries can name a directory, gating every file beneath it.
+  `path = "assets/v2"` with `version = "2.0"` keeps the whole folder out of
+  earlier builds. Variant directories inside it are dropped by the path they
+  produce, before a variant is chosen.
+- `vertion validate` now reads `vertion.cfg`, when there is one, and warns
+  about `[[files]]` entries that match no file. Such an entry gates nothing, so
+  after a rename the file or directory shipped ungated with no sign anything
+  was wrong. Entries the build would reject are reported as errors.
+
+### Changed
+
+- When several `[[files]]` entries cover a file, all of them must pass, the
+  same way a nested marker block needs its parents to pass. Previously only the
+  first entry for an exact path was used. A file entry can narrow what its
+  directory allows, but can't bring a file back from an `EXC` directory.
+- A `[[files]]` path naming the input directory itself (`""`, `"."`, `"./"`) is
+  now an error. It used to match nothing, silently.
+
 ### Fixed
 
 - `vertion build` (and `last`, `--auto`, `vertion include`, `vertion condition`)

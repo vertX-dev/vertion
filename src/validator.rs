@@ -6,6 +6,8 @@ use walkdir::WalkDir;
 
 use crate::config::detect_comment_style;
 use crate::parser::{detect_marker, Marker, MarkerKind};
+use crate::settings::{normalize_path_key, path_covers};
+use crate::variants::VARIANT_PREFIX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -51,6 +53,15 @@ impl ValidationSummary {
 
     pub fn ok(&self) -> bool {
         self.errors == 0
+    }
+
+    /// Record an issue, keeping the per-severity counts in step.
+    pub fn push(&mut self, issue: ValidationIssue) {
+        match issue.severity {
+            Severity::Warning => self.warnings += 1,
+            Severity::Error => self.errors += 1,
+        }
+        self.issues.push(issue);
     }
 }
 
@@ -176,14 +187,109 @@ pub fn validate_project(root: &Path, ignore: &[PathBuf]) -> io::Result<Validatio
         };
         summary.files_scanned += 1;
         for issue in issues {
-            match issue.severity {
-                Severity::Warning => summary.warnings += 1,
-                Severity::Error => summary.errors += 1,
-            }
-            summary.issues.push(issue);
+            summary.push(issue);
         }
     }
     Ok(summary)
+}
+
+/// Flag `[[files]]` entries that cover no file.
+///
+/// An entry whose path matches nothing does nothing, silently — so after a
+/// rename, the file (or a whole directory) ships ungated. `paths` are the
+/// normalized entry paths in config order; `inputs` are every input directory
+/// the config can build from (`[project]` and each profile), and an entry is
+/// live if it covers a file in any of them. Paths are compared as the build
+/// sees them: a file inside `.vertion.<target>/` counts as `<target>`.
+///
+/// Issues point at the entry's `[[files]]` header in `config_text`, falling
+/// back to line 1 when the headers can't be lined up with the entries (e.g. an
+/// inline `files = [...]` array).
+pub fn check_file_entries(
+    config: &Path,
+    config_text: &str,
+    paths: &[String],
+    inputs: &[PathBuf],
+) -> Vec<ValidationIssue> {
+    let inputs: Vec<&PathBuf> = inputs.iter().filter(|p| p.is_dir()).collect();
+    // No input to compare against: the build would fail on its own, and every
+    // entry would otherwise be reported as stale.
+    if paths.is_empty() || inputs.is_empty() {
+        return Vec::new();
+    }
+
+    // (path the build gates on, path as it sits in the source tree)
+    let mut files: Vec<(String, String)> = Vec::new();
+    for input in &inputs {
+        for entry in WalkDir::new(input).into_iter().filter_map(|e| e.ok()) {
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            let rel = entry.path().strip_prefix(input).unwrap_or(entry.path());
+            files.push((output_key(rel), normalize_path_key(&rel.to_string_lossy())));
+        }
+    }
+
+    let headers: Vec<usize> = config_text
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.trim_start().starts_with("[[files]]"))
+        .map(|(i, _)| i + 1)
+        .collect();
+    let line_of = |i: usize| {
+        if headers.len() == paths.len() {
+            headers[i]
+        } else {
+            1
+        }
+    };
+
+    let mut issues = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        if files.iter().any(|(out, _)| path_covers(path, out)) {
+            continue;
+        }
+        // Naming a variant directory by its source path is the likeliest
+        // mistake here, and the fix is mechanical, so spell it out.
+        let hint = if files.iter().any(|(_, src)| path_covers(path, src)) {
+            format!(
+                " — variant directories are matched by the path they produce: use `{}`",
+                output_key(Path::new(path))
+            )
+        } else {
+            String::new()
+        };
+        issues.push(ValidationIssue {
+            file: config.to_path_buf(),
+            line: line_of(i),
+            severity: Severity::Warning,
+            message: format!(
+                "[[files]] path `{}` matches no file, so it gates nothing{}",
+                path, hint
+            ),
+        });
+    }
+    issues
+}
+
+/// The path a source file is built to, as `[[files]]` sees it: each
+/// `.vertion.<target>` component becomes `<target>`, and the variant name that
+/// follows it is dropped.
+fn output_key(rel: &Path) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut comps = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned());
+    while let Some(c) = comps.next() {
+        match c.strip_prefix(VARIANT_PREFIX) {
+            Some(target) if !target.is_empty() => {
+                out.push(target.to_string());
+                comps.next();
+            }
+            _ => out.push(c),
+        }
+    }
+    out.join("/")
 }
 
 fn absolute(p: &Path) -> PathBuf {
@@ -269,6 +375,108 @@ mod tests {
         let issues = validate_file(&p).unwrap();
         assert!(issues.is_empty());
         let _ = fs::remove_file(&p);
+    }
+
+    fn tree(name: &str, files: &[&str]) -> PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("vertion-val-tree-{}-{}", name, std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for f in files {
+            let p = root.join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "x").unwrap();
+        }
+        root
+    }
+
+    fn check(paths: &[&str], inputs: &[PathBuf], text: &str) -> Vec<ValidationIssue> {
+        let paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+        check_file_entries(Path::new("vertion.cfg"), text, &paths, inputs)
+    }
+
+    #[test]
+    fn file_entries_that_cover_files_are_live() {
+        let src = tree(
+            "live",
+            &[
+                "assets/logo.png",
+                "assets/deep/a.png",
+                ".vertion.icon.png/2.0.0.png",
+                "ui/.vertion.theme/0.0.0/dark.css",
+            ],
+        );
+        let issues = check(
+            &[
+                "assets/logo.png",   // a file
+                "assets",            // a directory, covering files at any depth
+                "icon.png",          // a file variant, by the path it produces
+                "ui/theme/dark.css", // inside a folder variant
+            ],
+            std::slice::from_ref(&src),
+            "",
+        );
+        assert!(issues.is_empty(), "{:?}", issues);
+        let _ = fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    fn stale_file_entries_are_warned_at_their_header() {
+        let src = tree("stale", &["assets/logo.png"]);
+        let text = "[project]\nversion = \"1.0\"\n\n\
+                    [[files]]\npath = \"assets/logo.png\"\nversion = \"2.0\"\n\n\
+                    [[files]]\npath = \"assets/old.png\"\nversion = \"2.0\"\n\n\
+                    [[files]]\npath = \"asset\"\nversion = \"2.0\"\n";
+        let issues = check(
+            &["assets/logo.png", "assets/old.png", "asset"],
+            std::slice::from_ref(&src),
+            text,
+        );
+        assert_eq!(issues.len(), 2, "{:?}", issues);
+        assert_eq!((issues[0].line, issues[1].line), (8, 12));
+        assert!(issues[0].message.contains("`assets/old.png`"));
+        // `asset` is a prefix of `assets` but not a directory of its own.
+        assert!(issues[1].message.contains("`asset`"));
+        assert!(issues.iter().all(|i| i.severity == Severity::Warning));
+        let _ = fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    fn variant_source_path_gets_a_hint() {
+        let src = tree(
+            "hint",
+            &[
+                "assets/.vertion.logo.png/2.0.0.png",
+                "ui/.vertion.theme/0.0.0/dark.css",
+            ],
+        );
+        let issues = check(
+            &["assets/.vertion.logo.png", "ui/.vertion.theme"],
+            std::slice::from_ref(&src),
+            "",
+        );
+        assert_eq!(issues.len(), 2);
+        assert!(issues[0].message.ends_with("use `assets/logo.png`"));
+        // A folder variant: the suggestion is the folder, not a file inside it.
+        assert!(issues[1].message.ends_with("use `ui/theme`"));
+        // Headers that can't be lined up with entries fall back to line 1.
+        assert_eq!(issues[0].line, 1);
+        let _ = fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    fn an_entry_live_in_any_input_is_live() {
+        let main = tree("in-main", &["a.png"]);
+        let alt = tree("in-alt", &["b.png"]);
+        let issues = check(&["a.png", "b.png"], &[main.clone(), alt.clone()], "");
+        assert!(issues.is_empty(), "{:?}", issues);
+        let _ = fs::remove_dir_all(&main);
+        let _ = fs::remove_dir_all(&alt);
+    }
+
+    #[test]
+    fn missing_input_reports_nothing() {
+        let gone = std::env::temp_dir().join("vertion-val-no-such-input");
+        assert!(check(&["a.png"], &[gone], "").is_empty());
     }
 
     #[test]

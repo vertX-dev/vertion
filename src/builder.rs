@@ -12,7 +12,7 @@ use walkdir::WalkDir;
 use crate::config::detect_comment_style;
 use crate::filter::{tag_passes, FilterMode};
 use crate::parser::{conditions_pass, process_file, ProcessOptions};
-use crate::settings::{normalize_path_key, FileVersionSpec};
+use crate::settings::{normalize_path_key, path_covers, FileVersionSpec};
 use crate::variants::{DEFAULT_STEM, VARIANT_PREFIX};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -156,20 +156,10 @@ pub fn build_project(opts: BuildOptions<'_>) -> Result<BuildResult, io::Error> {
         }
         let rel = path.strip_prefix(&input_abs).unwrap_or(path).to_path_buf();
         // Whole-file version gate: exclude files whose config-assigned version
-        // fails the filter/tags (or is `EXC`). Passing files fall through and copy as-is.
-        match file_version_for(&rel, opts.file_versions) {
-            Some(FileVersionSpec::Exclude) => continue,
-            Some(FileVersionSpec::At {
-                version,
-                tags,
-                conditions,
-            }) if !opts.filter.version_matches(version)
-                || !tag_passes(tags, opts.tags)
-                || !conditions_pass(conditions, opts.conditions) =>
-            {
-                continue
-            }
-            _ => {}
+        // (or an enclosing directory's) fails the filter/tags, or is `EXC`.
+        // Passing files fall through and copy as-is.
+        if !file_gate_passes(&rel, &opts) {
+            continue;
         }
         let dest = output_abs.join(&rel);
         if let Some(parent) = dest.parent() {
@@ -184,11 +174,21 @@ pub fn build_project(opts: BuildOptions<'_>) -> Result<BuildResult, io::Error> {
         if is_ignored(dir, &ignore_abs) || inside_variant_dir(dir, &input_abs) {
             continue; // nested variant dirs are the outer one's business
         }
+        // `[[files]]` sees a variant by the path it produces. Checked before
+        // resolving, so a gated-out directory can't raise a "no variant
+        // matches" warning or an ambiguity error for output it would drop.
+        if !file_gate_passes(&variant_target_rel(dir, &input_abs), &opts) {
+            continue;
+        }
         let picked = resolve_variant_dir(dir, &input_abs, &opts, &mut result.warnings)?;
         let Some((src, target_rel)) = picked else {
             continue;
         };
         for (file_src, file_rel) in expand_variant_source(&src, &target_rel)? {
+            // A folder variant's contents can still be gated individually.
+            if !file_gate_passes(&file_rel, &opts) {
+                continue;
+            }
             let dest = output_abs.join(&file_rel);
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent)?;
@@ -366,15 +366,44 @@ fn write_manifest(output_dir: &Path, result: &BuildResult) -> io::Result<()> {
     fs::write(manifest_path, json)
 }
 
-fn file_version_for<'a>(
-    rel: &Path,
-    map: &'a [(String, FileVersionSpec)],
-) -> Option<&'a FileVersionSpec> {
-    if map.is_empty() {
-        return None;
+/// Whether `[[files]]` lets the output path `rel` into this build.
+///
+/// Every entry covering `rel` — one for the file itself, and one for each
+/// directory above it — must pass, the same way a nested marker block is only
+/// reachable when its parents pass. So an entry can narrow what its directory
+/// allows but never widen it: an `EXC` directory stays excluded wholesale.
+/// Paths no entry covers always pass.
+fn file_gate_passes(rel: &Path, opts: &BuildOptions<'_>) -> bool {
+    if opts.file_versions.is_empty() {
+        return true;
     }
     let key = normalize_path_key(&rel.to_string_lossy());
-    map.iter().find(|(p, _)| *p == key).map(|(_, v)| v)
+    opts.file_versions
+        .iter()
+        .filter(|(p, _)| path_covers(p, &key))
+        .all(|(_, spec)| match spec {
+            FileVersionSpec::Exclude => false,
+            FileVersionSpec::At {
+                version,
+                tags,
+                conditions,
+            } => {
+                opts.filter.version_matches(version)
+                    && tag_passes(tags, opts.tags)
+                    && conditions_pass(conditions, opts.conditions)
+            }
+        })
+}
+
+/// Where a `.vertion.<target>` directory's winner lands, relative to the input
+/// root: its parent joined with `<target>`.
+fn variant_target_rel(dir: &Path, input_root: &Path) -> PathBuf {
+    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let target = name.strip_prefix(VARIANT_PREFIX).unwrap_or(name);
+    dir.parent()
+        .and_then(|p| p.strip_prefix(input_root).ok())
+        .map(|p| p.join(target))
+        .unwrap_or_else(|| PathBuf::from(target))
 }
 
 fn is_variant_dir_name(path: &Path) -> bool {
@@ -427,12 +456,7 @@ pub(crate) fn resolve_variant_dir(
         .map(|e| e.to_ascii_lowercase());
 
     // Where the produced file/folder lands, relative to the build root.
-    let parent_rel = dir
-        .parent()
-        .and_then(|p| p.strip_prefix(input_root).ok())
-        .map(|p| p.to_path_buf())
-        .unwrap_or_default();
-    let target_rel = parent_rel.join(target_name);
+    let target_rel = variant_target_rel(dir, input_root);
 
     let mut best: Option<(crate::variants::VariantSpec, PathBuf)> = None;
     let mut fallback: Option<PathBuf> = None;
@@ -975,6 +999,96 @@ mod tests {
         };
         let result = build_project(opts).unwrap();
         assert!(!result.output.join("draft.png").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn at(version: &str) -> FileVersionSpec {
+        FileVersionSpec::At {
+            version: parse_version(version).unwrap(),
+            tags: vec![],
+            conditions: vec![],
+        }
+    }
+
+    #[test]
+    fn directory_entry_gates_everything_beneath_it() {
+        let root = tmpdir("dirgate");
+        let input = root.join("src");
+        let output = root.join("build");
+        write_file(&input.join("assets/a.png"), "a");
+        write_file(&input.join("assets/deep/b.png"), "b");
+        // Shares the prefix but is a different directory — must not be caught.
+        write_file(&input.join("assets2/c.png"), "c");
+        write_file(&input.join("main.js"), "m\n");
+        // Trailing slash is accepted and means the same directory.
+        let file_versions = vec![(normalize_path_key("assets/"), at("2.0"))];
+
+        let build = |v: &str| {
+            let filter = parse_filter(&[v.to_string()]).unwrap();
+            let mut opts = variant_opts(&input, &output, &filter, &[]);
+            opts.file_versions = &file_versions;
+            build_project(opts).unwrap().output
+        };
+        let before = build("1.0");
+        assert!(!before.join("assets").exists());
+        assert!(before.join("assets2/c.png").exists());
+        assert!(before.join("main.js").exists());
+
+        let after = build("2.0");
+        assert!(after.join("assets/a.png").exists());
+        assert!(after.join("assets/deep/b.png").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn nested_entries_must_all_pass() {
+        let root = tmpdir("dirgate-nested");
+        let input = root.join("src");
+        let output = root.join("build");
+        write_file(&input.join("assets/early.png"), "e");
+        write_file(&input.join("assets/late.png"), "l");
+        write_file(&input.join("drafts/keep-me.png"), "k");
+        let file_versions = vec![
+            ("assets".to_string(), at("1.0")),
+            // Narrows its directory: needs 2.0 on top of the directory's 1.0.
+            ("assets/late.png".to_string(), at("2.0")),
+            ("drafts".to_string(), FileVersionSpec::Exclude),
+            // Cannot widen an excluded directory.
+            ("drafts/keep-me.png".to_string(), at("1.0")),
+        ];
+        let filter = parse_filter(&[String::from("1.5")]).unwrap();
+        let mut opts = variant_opts(&input, &output, &filter, &[]);
+        opts.file_versions = &file_versions;
+        let out = build_project(opts).unwrap().output;
+        assert!(out.join("assets/early.png").exists());
+        assert!(!out.join("assets/late.png").exists());
+        assert!(!out.join("drafts").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn directory_entry_gates_variant_output() {
+        let root = tmpdir("dirgate-variant");
+        let input = root.join("src");
+        let output = root.join("build");
+        // No variant matches 1.0 and there is no fallback: on its own this
+        // warns. Under an excluded directory it must be skipped silently.
+        write_file(&input.join("assets/.vertion.logo.png/9.0.0.png"), "logo");
+        // A folder variant whose contents are gated individually.
+        write_file(&input.join(".vertion.ui/0.0.0/old.txt"), "old");
+        write_file(&input.join(".vertion.ui/0.0.0/new.txt"), "new");
+        let file_versions = vec![
+            ("assets".to_string(), FileVersionSpec::Exclude),
+            ("ui/new.txt".to_string(), at("2.0")),
+        ];
+        let filter = parse_filter(&[String::from("1.0")]).unwrap();
+        let mut opts = variant_opts(&input, &output, &filter, &[]);
+        opts.file_versions = &file_versions;
+        let r = build_project(opts).unwrap();
+        assert!(!r.output.join("assets").exists());
+        assert!(r.warnings.is_empty(), "unexpected: {:?}", r.warnings);
+        assert!(r.output.join("ui/old.txt").exists());
+        assert!(!r.output.join("ui/new.txt").exists());
         let _ = fs::remove_dir_all(&root);
     }
 

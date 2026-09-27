@@ -265,6 +265,10 @@ path = "assets/new-ui.png"
 version = "1.0"
 conditions = ["!legacy"] # gated like a marker's {cond}; "!" negates
 
+[[files]]
+path = "assets/v2"       # a directory: gates everything beneath it
+version = "2.0"
+
 # Named conditions for `[tag{name}]` markers. Precedence: cmd > global > bool.
 [conditions.imagesInStable]
 bool = false             # manual project switch
@@ -279,7 +283,7 @@ cmd = "test -d assets/img"   # exit 0 = true, re-evaluated each build
 
 Use a profile with `--profile prod`. `--auto` increments `[project].version` after a successful build (illegal with `ONLY`, `--include`, or `--last ONLY`).
 
-`[[files]]` assigns a version to a whole file. The file is excluded from the build when its version fails the active filter (e.g. `logo.png` above is dropped from any build below `2.0`); otherwise it copies as-is. Use `version = "EXC"` to exclude a file from every build. Applies to `build`, `extract`, and `watch`.
+`[[files]]` assigns a version to a whole file. The file is excluded from the build when its version fails the active filter (e.g. `logo.png` above is dropped from any build below `2.0`); otherwise it copies as-is. Use `version = "EXC"` to exclude a file from every build. A `path` naming a directory gates everything beneath it; when a file is covered by several entries (its own and its directories'), all must pass. Applies to `build`, `extract`, and `watch`.
 
 > The config file is `vertion.cfg` (TOML syntax). A legacy `vertion.toml` is still read and written back to if present, so existing projects keep working — rename it to `vertion.cfg` when convenient.
 

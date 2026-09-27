@@ -60,7 +60,7 @@ enum Command {
     /// Tree view of version nesting in a file
     #[command(visible_alias = "g")]
     Graph { file: PathBuf },
-    /// Validate markers across the project
+    /// Validate markers across the project, and `[[files]]` entries in vertion.cfg
     #[command(visible_alias = "V")]
     Validate {
         /// Treat warnings as errors
@@ -686,6 +686,9 @@ fn cmd_graph(file: &Path) -> Result<(), String> {
 
 fn cmd_validate(input: &Path, ignore: &[PathBuf], strict: bool) -> Result<(), String> {
     let mut summary = validator::validate_project(input, ignore).map_err(|e| e.to_string())?;
+    for issue in validate_config(Path::new("."))? {
+        summary.push(issue);
+    }
     if strict {
         summary.promote_warnings_to_errors();
     }
@@ -710,6 +713,46 @@ fn cmd_validate(input: &Path, ignore: &[PathBuf], strict: bool) -> Result<(), St
         return Err(format!("validation failed: {} error(s)", summary.errors));
     }
     Ok(())
+}
+
+/// Config-level checks for `validate`. Nothing to check without a config.
+///
+/// `[[files]]` is checked against the config's own input directories rather
+/// than `--input`, since those are what its paths are relative to at build
+/// time — every one of them, as a profile may build from a different input.
+fn validate_config(root: &Path) -> Result<Vec<validator::ValidationIssue>, String> {
+    let path = settings::active_config_path(root);
+    // `./vertion.cfg` → `vertion.cfg`, to match how the other issues print.
+    let path = path
+        .strip_prefix(".")
+        .map(Path::to_path_buf)
+        .unwrap_or(path);
+    let Some(cfg) = settings::load(root).map_err(|e| format!("{}: {}", path.display(), e))? else {
+        return Ok(Vec::new());
+    };
+    let entries = match cfg.file_versions() {
+        Ok(entries) => entries,
+        // The build would refuse this config outright; say so here too.
+        Err(e) => {
+            return Ok(vec![validator::ValidationIssue {
+                file: path,
+                line: 1,
+                severity: validator::Severity::Error,
+                message: e.to_string(),
+            }])
+        }
+    };
+    let paths: Vec<String> = entries.into_iter().map(|(p, _)| p).collect();
+
+    let mut inputs = vec![root.join(&cfg.project.input)];
+    for p in cfg.profiles.values().filter_map(|p| p.input.as_ref()) {
+        let p = root.join(p);
+        if !inputs.contains(&p) {
+            inputs.push(p);
+        }
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
+    Ok(validator::check_file_entries(&path, &text, &paths, &inputs))
 }
 
 fn cmd_watch(args: BuildArgs) -> Result<(), String> {

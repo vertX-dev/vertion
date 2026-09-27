@@ -105,6 +105,7 @@ pub struct VertionConfig {
     /// Whole-file version assignments for files that can't carry comment markers
     /// (images, JSON, binaries). A file is excluded from the build when its
     /// assigned version fails the active filter; otherwise it copies as-is.
+    /// An entry naming a directory gates everything beneath it.
     #[serde(default, rename = "files")]
     pub files: Vec<FileVersion>,
     /// Named conditions referenced by `{name}` on marker tags.
@@ -114,7 +115,8 @@ pub struct VertionConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FileVersion {
-    /// Path relative to the input directory (forward slashes; leading `./` optional).
+    /// Path relative to the input directory (forward slashes; leading `./` and
+    /// trailing `/` optional). A directory covers every file beneath it.
     pub path: String,
     pub version: String,
     /// Optional tags, filtered the same way as in-code block tags (`--tag`, OR-logic).
@@ -127,9 +129,20 @@ pub struct FileVersion {
     pub conditions: Vec<String>,
 }
 
-/// Normalize a path for matching: forward slashes, no leading `./`.
+/// Normalize a path for matching: forward slashes, no leading `./`, no trailing
+/// `/` (so `"assets/"` and `"assets"` name the same directory).
 pub fn normalize_path_key(s: &str) -> String {
-    s.replace('\\', "/").trim_start_matches("./").to_string()
+    s.replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .to_string()
+}
+
+/// True when `key` is the path `entry` names, or lies beneath it. Matching is
+/// per component, so `assets` covers `assets/logo.png` but not `assets2/x`.
+pub fn path_covers(entry: &str, key: &str) -> bool {
+    key.strip_prefix(entry)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -346,6 +359,16 @@ impl VertionConfig {
         self.files
             .iter()
             .map(|f| {
+                let key = normalize_path_key(&f.path);
+                // An empty key would otherwise cover nothing at all (relative
+                // paths never start with `/`), silently doing nothing.
+                if key.is_empty() || key == "." {
+                    return Err(SettingsError(format!(
+                        "[[files]] path `{}` names the input directory itself; \
+                         use a file or a subdirectory",
+                        f.path
+                    )));
+                }
                 let spec = if f.version.eq_ignore_ascii_case("EXC") {
                     FileVersionSpec::Exclude
                 } else {
@@ -361,7 +384,7 @@ impl VertionConfig {
                         conditions,
                     }
                 };
-                Ok((normalize_path_key(&f.path), spec))
+                Ok((key, spec))
             })
             .collect()
     }
@@ -435,7 +458,6 @@ pub fn load_or_default(project_root: &Path) -> Result<VertionConfig, SettingsErr
     Ok(cfg)
 }
 
-#[allow(dead_code)]
 pub fn load(project_root: &Path) -> Result<Option<VertionConfig>, SettingsError> {
     let p = active_config_path(project_root);
     if !p.exists() {
@@ -936,6 +958,32 @@ mod tests {
         let cfg = load_or_default(&dir).unwrap();
         assert_eq!(cfg.project.version, "0.1.0");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn file_paths_match_directories_per_component() {
+        for spelled in ["assets", "assets/", "./assets/", "assets\\"] {
+            assert_eq!(normalize_path_key(spelled), "assets", "{spelled}");
+        }
+        assert!(path_covers("assets", "assets"));
+        assert!(path_covers("assets", "assets/logo.png"));
+        assert!(path_covers("assets", "assets/deep/x.png"));
+        assert!(!path_covers("assets", "assets2/x.png"));
+        assert!(!path_covers("assets/logo.png", "assets"));
+    }
+
+    #[test]
+    fn file_entry_for_the_input_root_is_rejected() {
+        for path in ["", "./", ".", "/"] {
+            let mut cfg = VertionConfig::default_template();
+            cfg.files.push(FileVersion {
+                path: path.into(),
+                version: "1.0".into(),
+                tags: vec![],
+                conditions: vec![],
+            });
+            assert!(cfg.file_versions().is_err(), "`{path}` was accepted");
+        }
     }
 
     #[test]

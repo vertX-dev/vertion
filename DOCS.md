@@ -82,6 +82,10 @@ conditions = ["!legacy"]        # optional; gated like a marker's `{cond}` ("!" 
 path    = "assets/wip.psd"
 version = "EXC"                 # excluded from every build, regardless of filter
 
+[[files]]
+path    = "assets/v2"           # a directory: gates every file beneath it
+version = "2.0"
+
 # Named conditions, referenced from markers as `[tag{name}]`.
 # Manage with `vertion condition`. Precedence: cmd > global > bool.
 [conditions.imagesInStable]
@@ -150,11 +154,11 @@ An array of version ranges managed with `vertion include` (see [§4.12](#412-ver
 
 ### `[[files]]`
 
-Whole-file version gating for files that can't hold comment markers. See [§5.9](#59-file-level-versioning-files).
+Whole-file version gating for files that can't hold comment markers, or for whole directories. See [§5.9](#59-file-level-versioning-files).
 
 | Field | Type | Notes |
 |---|---|---|
-| `path` | string | Relative to the effective input directory. Leading `./` and `\` are normalized away, so `"assets/x.png"`, `"./assets/x.png"`, and Windows-style `"assets\x.png"` all match the same entry. No globs/wildcards — exact path only. |
+| `path` | string | A file or directory, relative to the effective input directory. A directory gates every file beneath it. A leading `./` and a trailing `/` are dropped and `\` becomes `/`, so `"assets"`, `"./assets/"`, and Windows-style `"assets\"` all name the same directory. Matching is per path component (`assets` doesn't cover `assets2/`) and case-sensitive. No globs/wildcards. Naming the input directory itself (`""`, `"."`, `"./"`) is an error. |
 | `version` | string | A version, evaluated against the active filter exactly like an in-code block. Or the literal `"EXC"` (case-insensitive) to exclude the file from **every** build unconditionally. |
 | `tags` | array of strings | Optional. Filtered by the active `--tag` set with the same OR-logic as in-code block tags: an untagged file always passes; a tagged file is kept only if it shares a tag. Ignored when `version = "EXC"`. |
 | `conditions` | array of strings | Optional. Gates the file exactly like `{cond}` gates a marker — all must hold. Prefix a name with `!` to negate (`conditions = ["!legacy"]`). Unknown names never pass. Ignored when `version = "EXC"`. |
@@ -343,7 +347,18 @@ version = "EXC"
 
 - Evaluated with the exact same `FilterMode` logic as an in-code block (`version_matches`), so `cumulative`/`range`/`only`/`extract`/`include` all apply correctly.
 - `version = "EXC"` excludes the file from every build unconditionally, mirroring an in-code `EXC` block.
-- A file not listed here is unaffected by `[[files]]` — it just goes through the normal path (parsed for markers if it's text, copied through untouched if it's binary or has no markers).
+- A `path` naming a directory gates every file beneath it, at any depth:
+
+  ```toml
+  [[files]]
+  path    = "assets/v2"      # nothing under assets/v2/ ships before 2.0
+  version = "2.0"
+  ```
+
+- When several entries cover a file — its own, and one per enclosing directory — **all of them must pass**, just as a nested marker block is only reachable when its parents are. An inner entry can narrow what its directory allows (a `2.5` file inside a `2.0` directory appears at 2.5), but never widen it: nothing inside an `EXC` directory ships, whatever its own entry says. The same applies to two entries for the same path.
+- Variant directories (§5.9b) are matched by the path they produce: `assets/.vertion.logo.png/` counts as `assets/logo.png`, so a gated-out `assets` drops it before any variant is chosen, with no "no variant matches" warning. The files of a folder variant can be gated individually by their output paths.
+- `vertion validate` warns about entries that cover no file (see [§4.9](#49-vertion-validate)), since those silently gate nothing.
+- A file not covered by any entry is unaffected by `[[files]]` — it just goes through the normal path (parsed for markers if it's text, copied through untouched if it's binary or has no markers).
 
 ---
 
@@ -500,12 +515,17 @@ Same data as `show`, rendered as a `├── / └── / │` tree instead of
 vertion validate [-q] [-I INPUT] [-n IGNORE]...
 ```
 
-Scans every file under `INPUT` (default `.`) for marker problems — does **not** read `vertion.cfg` at all, this is pure CLI. Reports:
+Scans every file under `INPUT` (default `.`) for marker problems. Reports:
 
 - Malformed markers (bad version, unterminated tag list, `from >= to` on a range, trailing junk).
 - Unclosed blocks (open marker with no matching close).
 - Mismatched range closes (same version, different `to` reopened/closed inconsistently).
 - Duplicate-sibling warnings (same `(version, to)` already open higher on the stack — the close will pair with the wrong block).
+
+When a `vertion.cfg` exists in the current directory, it also checks the config's `[[files]]` entries:
+
+- **Stale entries** (warning): a `path` that covers no file does nothing, so after a rename the file — or a whole directory — ships ungated. Checked against the config's own input directories (`[project].input` and every profile's `input`), not `-I`, because those are what the paths are relative to at build time; an entry counts as live if it matches in any of them. The warning points at the entry's `[[files]]` line. An entry naming a variant directory by its source path (`assets/.vertion.logo.png`) gets the path to use instead (`assets/logo.png`).
+- **Invalid entries** (error): anything the build itself would reject, such as a bad `version` or a `path` naming the input directory.
 
 `-q`/`--strict` promotes all warnings to errors. Exits non-zero if any errors remain.
 
@@ -515,7 +535,7 @@ Scans every file under `INPUT` (default `.`) for marker problems — does **not*
 vertion stats [-I INPUT] [-n IGNORE]... [-j]
 ```
 
-Also pure-CLI, no config file involved. Reports: files scanned, files with markers, total blocks, tagged blocks, deepest nesting, average nesting, version distribution, tag distribution, and the top 5 files by block count. `-j`/`--json` emits the same data as JSON (field names: `files_scanned`, `files_with_markers`, `total_blocks`, `tagged_blocks`, `deepest_nesting`, `average_nesting`, `version_distribution`, `tag_distribution`, `top_files_by_blocks`).
+Pure CLI, no config file involved. Reports: files scanned, files with markers, total blocks, tagged blocks, deepest nesting, average nesting, version distribution, tag distribution, and the top 5 files by block count. `-j`/`--json` emits the same data as JSON (field names: `files_scanned`, `files_with_markers`, `total_blocks`, `tagged_blocks`, `deepest_nesting`, `average_nesting`, `version_distribution`, `tag_distribution`, `top_files_by_blocks`).
 
 ### 4.11. `vertion init`
 
@@ -786,7 +806,7 @@ Success/warning/error lines are colorized (green/yellow/red) when stderr is a re
 
 ### 5.9. File-level versioning (`[[files]]`)
 
-See [§1](#files) for the schema. A file listed in `[[files]]` is excluded when its version fails the active filter, when its tags don't match `--tag`, or when its version is `EXC`. Files not listed are unaffected.
+See [§1](#files) for the schema. A file covered by `[[files]]` — listed itself, or inside a listed directory — is excluded when any covering entry's version fails the active filter, its tags don't match `--tag`, its conditions don't hold, or its version is `EXC`. Files not covered are unaffected.
 
 ### 5.9b. Variant directories (`.vertion.<target>/`)
 
@@ -859,7 +879,7 @@ Evaluation semantics inside a build:
 - Unknown condition names **never** pass, negated or not, and produce a per-line warning; `--strict` promotes that to a build failure. (Unknown-as-false plus negation would otherwise make a typo silently *include* code.)
 - `[[files]]` entries accept the same conditions via a `conditions = [...]` list, with `"!name"` for negation.
 
-`vertion validate` does **not** currently check condition names (it doesn't read config) — unknown names surface as build warnings instead.
+`vertion validate` does **not** currently check condition names — unknown names surface as build warnings instead.
 
 ---
 
