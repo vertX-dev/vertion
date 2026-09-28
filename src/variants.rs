@@ -14,6 +14,8 @@
 //!     .vertion.default.png  ← used when nothing else matches
 //! ```
 
+use std::path::{Path, PathBuf};
+
 use semver::Version;
 
 use crate::filter::{tag_passes, FilterMode};
@@ -25,6 +27,30 @@ pub const VARIANT_PREFIX: &str = ".vertion.";
 
 /// Reserved variant stem used when no other variant matches.
 pub const DEFAULT_STEM: &str = ".vertion.default";
+
+/// Where an input path lands in the output. The identity, except inside a
+/// `.vertion.<target>/` directory: that is emitted as `<target>`, and the
+/// variant's own name (`2.0.0.png`, or a folder variant's `2.0.0/`) is not
+/// part of the result.
+pub fn output_path(rel: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    let mut comps = rel.components();
+    while let Some(c) = comps.next() {
+        match c
+            .as_os_str()
+            .to_string_lossy()
+            .strip_prefix(VARIANT_PREFIX)
+            .filter(|t| !t.is_empty())
+        {
+            Some(target) => {
+                out.push(target);
+                comps.next();
+            }
+            None => out.push(c.as_os_str()),
+        }
+    }
+    out
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VariantSpec {

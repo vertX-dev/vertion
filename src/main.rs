@@ -7,6 +7,7 @@ mod linemap;
 mod parser;
 mod runner;
 mod settings;
+mod stamp;
 mod stats;
 mod trace;
 mod validator;
@@ -449,7 +450,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         } else {
             cfg.last.tags.clone()
         };
-        let dev = args.dev || cfg.last.dev;
+        let dev = args.dev || resolved.dev || cfg.last.dev;
         (tags, dev)
     } else {
         // CLI --tag replaces the profile's tags entirely; otherwise use the profile's.
@@ -458,7 +459,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         } else {
             resolved.tags.clone()
         };
-        (tags, args.dev)
+        (tags, args.dev || resolved.dev)
     };
 
     // ---- Resolve wrap settings: CLI > profile > [last] (for `vertion last`) ----
@@ -498,6 +499,7 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
     );
 
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
+    let stamps = cfg.stamps().map_err(|e| e.to_string())?;
     let condition_pairs = resolve_condition_pairs(&cfg, project_root, &build_env)?;
     let opts = BuildOptions {
         input: &build_input,
@@ -507,10 +509,11 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
         tags: &tags,
         dev,
         preserve_context: false,
-        strict: args.strict,
+        strict: args.strict || resolved.strict,
         show_progress: !args.no_progress,
-        no_comments: args.no_comments,
+        no_comments: args.no_comments || resolved.no_comments,
         file_versions: &file_versions,
+        stamps: &stamps,
         conditions: &condition_pairs,
         tag_priority: &resolved.tag_priority,
     };
@@ -535,13 +538,20 @@ fn cmd_build(args: BuildArgs, kind: BuildKind) -> Result<(), String> {
     let result = build_outcome.map_err(|e| e.to_string())?;
 
     println!(
-        "{} ({})\n  files processed : {}\n  files modified  : {}\n  files copied    : {}\n  lines removed   : {}\n  time            : {}ms\n  output          : {}",
+        "{} ({})\n  files processed : {}\n  files modified  : {}\n  files copied    : {}\n  lines removed   : {}",
         paint_success("Build completed"),
         result.mode,
         result.files_processed,
         result.files_modified,
         result.files_copied,
         result.lines_stripped,
+    );
+    // Only shown when `[[stamp]]` did something, so it's not noise otherwise.
+    if result.files_stamped > 0 {
+        println!("  files stamped   : {}", result.files_stamped);
+    }
+    println!(
+        "  time            : {}ms\n  output          : {}",
         result.time_ms,
         result.output.display()
     );
@@ -639,6 +649,7 @@ fn cmd_extract(
         false,
     );
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
+    let stamps = cfg.stamps().map_err(|e| e.to_string())?;
     let condition_pairs = resolve_condition_pairs(&cfg, project_root, &build_env)?;
     let opts = BuildOptions {
         input: &input,
@@ -648,10 +659,13 @@ fn cmd_extract(
         tags: &tags,
         dev: false,
         preserve_context,
-        strict,
+        // Only `strict` carries over from a profile: extract has no `--dev`
+        // or `--no-comments` of its own to pair with the other two.
+        strict: strict || resolved.strict,
         show_progress: true,
         no_comments: false,
         file_versions: &file_versions,
+        stamps: &stamps,
         conditions: &condition_pairs,
         tag_priority: &resolved.tag_priority,
     };
@@ -717,10 +731,13 @@ fn cmd_validate(input: &Path, ignore: &[PathBuf], strict: bool) -> Result<(), St
 
 /// Config-level checks for `validate`. Nothing to check without a config.
 ///
-/// `[[files]]` is checked against the config's own input directories rather
-/// than `--input`, since those are what its paths are relative to at build
-/// time — every one of them, as a profile may build from a different input.
+/// `[[files]]` and `[[stamp]]` are checked against the config's own input
+/// directories rather than `--input`, since those are what their paths are
+/// relative to at build time — every one of them, as a profile may build from
+/// a different input.
 fn validate_config(root: &Path) -> Result<Vec<validator::ValidationIssue>, String> {
+    use validator::{Severity, Table, ValidationIssue};
+
     let path = settings::active_config_path(root);
     // `./vertion.cfg` → `vertion.cfg`, to match how the other issues print.
     let path = path
@@ -730,19 +747,7 @@ fn validate_config(root: &Path) -> Result<Vec<validator::ValidationIssue>, Strin
     let Some(cfg) = settings::load(root).map_err(|e| format!("{}: {}", path.display(), e))? else {
         return Ok(Vec::new());
     };
-    let entries = match cfg.file_versions() {
-        Ok(entries) => entries,
-        // The build would refuse this config outright; say so here too.
-        Err(e) => {
-            return Ok(vec![validator::ValidationIssue {
-                file: path,
-                line: 1,
-                severity: validator::Severity::Error,
-                message: e.to_string(),
-            }])
-        }
-    };
-    let paths: Vec<String> = entries.into_iter().map(|(p, _)| p).collect();
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
 
     let mut inputs = vec![root.join(&cfg.project.input)];
     for p in cfg.profiles.values().filter_map(|p| p.input.as_ref()) {
@@ -751,8 +756,43 @@ fn validate_config(root: &Path) -> Result<Vec<validator::ValidationIssue>, Strin
             inputs.push(p);
         }
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {}", path.display(), e))?;
-    Ok(validator::check_file_entries(&path, &text, &paths, &inputs))
+
+    // An entry the build would refuse outright is an error here too.
+    let refused = |e: settings::SettingsError| ValidationIssue {
+        file: path.clone(),
+        line: 1,
+        severity: Severity::Error,
+        message: e.to_string(),
+    };
+    let mut issues = Vec::new();
+    match cfg.file_versions() {
+        Ok(entries) => {
+            let paths: Vec<String> = entries.into_iter().map(|(p, _)| p).collect();
+            issues.extend(validator::check_entry_paths(
+                &path,
+                &text,
+                Table::Files,
+                &paths,
+                &inputs,
+            ));
+        }
+        Err(e) => issues.push(refused(e)),
+    }
+    match cfg.stamps() {
+        Ok(stamps) => {
+            let paths: Vec<String> = stamps.iter().map(|s| s.path.clone()).collect();
+            issues.extend(validator::check_entry_paths(
+                &path,
+                &text,
+                Table::Stamp,
+                &paths,
+                &inputs,
+            ));
+            issues.extend(validator::check_stamp_keys(&path, &text, &stamps, &inputs));
+        }
+        Err(e) => issues.push(refused(e)),
+    }
+    Ok(issues)
 }
 
 fn cmd_watch(args: BuildArgs) -> Result<(), String> {
@@ -780,9 +820,10 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
         &filter,
         resolved.profile.as_deref(),
         &tags,
-        args.dev,
+        args.dev || resolved.dev,
     );
     let file_versions = cfg.file_versions().map_err(|e| e.to_string())?;
+    let stamps = cfg.stamps().map_err(|e| e.to_string())?;
     let condition_pairs = resolve_condition_pairs(&cfg, project_root, &build_env)?;
     let opts = BuildOptions {
         input: &input,
@@ -790,12 +831,13 @@ fn cmd_watch(args: BuildArgs) -> Result<(), String> {
         filter: &filter,
         ignore: &ignore,
         tags: &tags,
-        dev: args.dev,
+        dev: args.dev || resolved.dev,
         preserve_context: false,
-        strict: args.strict,
+        strict: args.strict || resolved.strict,
         show_progress: !args.no_progress,
-        no_comments: args.no_comments,
+        no_comments: args.no_comments || resolved.no_comments,
         file_versions: &file_versions,
+        stamps: &stamps,
         conditions: &condition_pairs,
         tag_priority: &resolved.tag_priority,
     };

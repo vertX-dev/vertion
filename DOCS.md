@@ -60,6 +60,9 @@ run_here  = ["git add build"]                  # post-build commands, run IN THE
 tags      = ["combat"]          # optional default tag filter (CLI --tag replaces it)
 wrap      = "temp"              # optional: "temp" | "perm"
 wrap_name = ".vertion_wrap"     # optional
+strict      = true              # optional: as if --strict were passed
+no_comments = true              # optional: as if --no-comments were passed
+dev         = false             # optional: as if --dev were passed
 
 # Zero or more. A non-contiguous version set, managed via `vertion include`.
 [[include]]
@@ -85,6 +88,12 @@ version = "EXC"                 # excluded from every build, regardless of filte
 [[files]]
 path    = "assets/v2"           # a directory: gates every file beneath it
 version = "2.0"
+
+# Zero or more. Rewrite version values in a JSON output file to the build's
+# version. Sources are never touched.
+[[stamp]]
+path = "BP/manifest.json"                         # output file, relative to the input dir
+keys = ["header.version", "modules.*.version"]    # dot paths; `*` = every member/element
 
 # Named conditions, referenced from markers as `[tag{name}]`.
 # Manage with `vertion condition`. Precedence: cmd > global > bool.
@@ -140,8 +149,13 @@ Selected with `-p NAME` / `--profile NAME` on `build`, `last`, `watch`, or `extr
 | `tags` | array of strings | Default tag filter for builds using this profile. CLI `-t`/`--tag` **replaces** this list entirely when given (no merge). |
 | `wrap` | `"temp"` \| `"perm"` | Default wrap mode for this profile. |
 | `wrap_name` | string | Default wrap folder name for this profile. |
+| `strict` | bool | Treat warnings as errors, as `-q`/`--strict` does. Applies to `build`, `last`, `watch`, and `extract`. |
+| `no_comments` | bool | Strip whole-line comments from the output, as `--no-comments` does. Applies to `build`, `last`, and `watch`. |
+| `dev` | bool | Build to a timestamped folder, as `-d`/`--dev` does. Applies to `build`, `last`, and `watch`. |
 
 Resolution order for input/output/ignore/increment/tags/wrap: **CLI flag > profile field > `[project]`/`[build]` default.** `-n`/`--ignore` values passed on the CLI are *appended* to whatever `ignore` list the profile/project step produced; `-t`/`--tag` and `-r`/`--run` instead *replace* the profile's list.
+
+`strict`, `no_comments`, and `dev` are switches: each is on when the profile **or** its CLI flag turns it on. Since the flags can only switch things on, a profile's `strict = true` can't be undone from the command line — build without `-p` for that. All three default to `false`.
 
 ### `[[include]]`
 
@@ -162,6 +176,15 @@ Whole-file version gating for files that can't hold comment markers, or for whol
 | `version` | string | A version, evaluated against the active filter exactly like an in-code block. Or the literal `"EXC"` (case-insensitive) to exclude the file from **every** build unconditionally. |
 | `tags` | array of strings | Optional. Filtered by the active `--tag` set with the same OR-logic as in-code block tags: an untagged file always passes; a tagged file is kept only if it shares a tag. Ignored when `version = "EXC"`. |
 | `conditions` | array of strings | Optional. Gates the file exactly like `{cond}` gates a marker — all must hold. Prefix a name with `!` to negate (`conditions = ["!legacy"]`). Unknown names never pass. Ignored when `version = "EXC"`. |
+
+### `[[stamp]]`
+
+Writes the build's version into JSON output files. See [§5.9c](#59c-version-stamping-stamp).
+
+| Field | Type | Notes |
+|---|---|---|
+| `path` | string | One output file, relative to the effective input directory, normalized like a `[[files]]` path. Must name a file, not a directory. A variant directory is named by the path it produces (`logo.json`, not `.vertion.logo.json`). |
+| `keys` | array of strings | At least one. Dot-separated paths to the version values: `header.version`, `modules.*.version`. `*` matches every member of an object or element of an array; a number segment (`modules.0.version`) indexes an array. |
 
 ### `[conditions.NAME]`
 
@@ -527,6 +550,8 @@ When a `vertion.cfg` exists in the current directory, it also checks the config'
 - **Stale entries** (warning): a `path` that covers no file does nothing, so after a rename the file — or a whole directory — ships ungated. Checked against the config's own input directories (`[project].input` and every profile's `input`), not `-I`, because those are what the paths are relative to at build time; an entry counts as live if it matches in any of them. The warning points at the entry's `[[files]]` line. An entry naming a variant directory by its source path (`assets/.vertion.logo.png`) gets the path to use instead (`assets/logo.png`).
 - **Invalid entries** (error): anything the build itself would reject, such as a bad `version` or a `path` naming the input directory.
 
+It checks `[[stamp]]` entries the same way — a `path` that names no file gets a warning — and additionally dry-runs each entry against its source file, so a mistyped key (`matched nothing`) or a value that isn't a version is reported before a build. Entries whose source is a variant directory are skipped by the dry run, since there's no single source to test.
+
 `-q`/`--strict` promotes all warnings to errors. Exits non-zero if any errors remain.
 
 ### 4.10. `vertion stats`
@@ -852,6 +877,32 @@ The leading `-` is only needed when something precedes, so a stem may start with
 4. No match → `.vertion.default.<ext>` if present; otherwise nothing is emitted and a warning names the missing file (`--strict` turns that into a failure).
 
 **Folders** work the same way: `.vertion.assets/` holds variant *subdirectories* (`1.0.0/`, `2.0.0/`, `-beta/`), and the winner's whole subtree is copied out as `assets/`.
+
+### 5.9c. Version stamping (`[[stamp]]`)
+
+Files that record their own version — a Minecraft `manifest.json`, a `package.json` — would otherwise need editing by hand before every build. List them instead, and each build writes its version into its own copy:
+
+```toml
+[[stamp]]
+path = "BP/manifest.json"
+keys = ["header.version", "modules.*.version"]
+
+[[stamp]]
+path = "RP/manifest.json"
+keys = ["header.version", "modules.*.version"]
+```
+
+After `vertion build -v 1.2.0`, `build/1.2.0/BP/manifest.json` has `"version": [1, 2, 0]` wherever those keys point. The source keeps whatever it had, so nothing needs committing after a build.
+
+- **The version** is the build's: the one in its output folder name. For a range or `--include` build, that's the upper bound.
+- **String values** get the full version, pre-release included: `"1.2.0"`, `"2.0.0-beta.1"`.
+- **`[major, minor, patch]` arrays** get the three numbers. The array must already hold exactly three numbers; anything else is left alone with a warning.
+- **Only the selected values change.** The file is edited in place, not re-serialized, so formatting, key order, `//` and `/* */` comments, and trailing commas all survive, and a multi-line array keeps its layout. The line count never changes, which is what lets `vertion map` keep working on stamped files.
+- **Stamping runs after filtering**, on the finished output. Marker blocks inside the JSON are resolved first, and a file `[[files]]` leaves out of the build is simply not stamped.
+- **Problems are warnings** (fatal under `--strict`): a key that matched nothing, a value that isn't a version, or a file that isn't valid JSON. `vertion validate` reports the same ones up front — see [§4.9](#49-vertion-validate).
+- A key selecting another pack's version — say, a `dependencies.*.version` that should stay pinned — is stamped like any other, so only list the keys you mean.
+
+The summary line `files stamped : N` appears when a build stamped anything, and `files_stamped` is recorded in `vertion.manifest.json`.
 
 ### 5.10. Conditions
 

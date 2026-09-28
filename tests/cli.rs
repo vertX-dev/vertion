@@ -222,6 +222,81 @@ fn an_unparsable_version_fails_with_a_message() {
         .stderr(contains("error:"));
 }
 
+#[test]
+fn stamp_writes_the_build_version_into_output_only() {
+    let tmp = project();
+    let manifest = "{\n  \"header\": { \"version\": [1, 0, 0] },\n  \"modules\": [\n    { \"version\": [1, 0, 0] }\n  ]\n}\n";
+    for pack in ["BP", "RP"] {
+        fs::create_dir_all(tmp.path().join("src").join(pack)).unwrap();
+        fs::write(
+            tmp.path().join("src").join(pack).join("manifest.json"),
+            manifest,
+        )
+        .unwrap();
+    }
+    let cfg = format!(
+        "{CFG}\n\
+         [[stamp]]\npath = \"BP/manifest.json\"\nkeys = [\"header.version\", \"modules.*.version\"]\n\n\
+         [[stamp]]\npath = \"RP/manifest.json\"\nkeys = [\"header.verison\"]\n"
+    );
+    fs::write(tmp.path().join("vertion.cfg"), cfg).unwrap();
+
+    vertion(tmp.path())
+        .args(["build", "-v", "2.3.1"])
+        .assert()
+        .success()
+        .stdout(contains("files stamped   : 1"))
+        // The typo'd key in RP is reported, not silently ignored.
+        .stderr(contains("stamp key `header.verison` matched nothing"));
+
+    let out = fs::read_to_string(tmp.path().join("build/2.3.1/BP/manifest.json")).unwrap();
+    assert_eq!(out, manifest.replace("[1, 0, 0]", "[2, 3, 1]"));
+    // Sources keep their own version; only the build carries the new one.
+    let src = fs::read_to_string(tmp.path().join("src/BP/manifest.json")).unwrap();
+    assert_eq!(src, manifest);
+
+    // The same typo, caught before building.
+    vertion(tmp.path())
+        .arg("validate")
+        .assert()
+        .success()
+        .stderr(contains("`header.verison` matched nothing"));
+}
+
+#[test]
+fn profile_switches_apply_without_the_flags() {
+    let tmp = project();
+    let cfg = format!("{CFG}\n[profiles.prod]\nno_comments = true\nstrict = true\n");
+    fs::write(tmp.path().join("vertion.cfg"), cfg).unwrap();
+    fs::write(tmp.path().join("src/app.js"), "// doc\nconst a = 1;\n").unwrap();
+
+    // Without the profile, comments survive.
+    vertion(tmp.path())
+        .args(["build", "-v", "1.0"])
+        .assert()
+        .success();
+    assert!(built(&tmp, "1.0.0").contains("// doc"));
+
+    // With it, `no_comments` strips them with no `--noc` on the command line.
+    vertion(tmp.path())
+        .args(["build", "-v", "1.0", "-p", "prod"])
+        .assert()
+        .success();
+    assert_eq!(built(&tmp, "1.0.0"), "const a = 1;\n");
+
+    // …and `strict` turns an otherwise-passing warning into a failure.
+    fs::write(tmp.path().join("src/app.js"), "x\n//version oops *\n").unwrap();
+    vertion(tmp.path())
+        .args(["build", "-v", "1.0"])
+        .assert()
+        .success();
+    vertion(tmp.path())
+        .args(["build", "-v", "1.0", "-p", "prod"])
+        .assert()
+        .failure()
+        .stderr(contains("strict mode"));
+}
+
 // ------------------------------------------------------------------ inspect
 
 #[test]

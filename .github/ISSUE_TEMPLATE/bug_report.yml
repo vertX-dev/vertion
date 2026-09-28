@@ -16,7 +16,7 @@ body:
     attributes:
       label: Version
       description: Output of `vertion --version`.
-      placeholder: vertion 1.0.0
+      placeholder: vertion 1.1.0
     validations:
       required: true
 

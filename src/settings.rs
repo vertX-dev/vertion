@@ -9,6 +9,7 @@ use toml_edit::{Array, ArrayOfTables, DocumentMut, InlineTable, Item, Table, Tab
 
 use crate::filter::{parse_version, FilterMode, IncludeEntry, IncrementLevel};
 use crate::parser::{parse_condition_token, MarkerCondition};
+use crate::stamp::Stamp;
 
 pub const DEFAULT_CONFIG_NAME: &str = "vertion.cfg";
 /// Older config name, still read (and written back to) if present so existing
@@ -108,6 +109,9 @@ pub struct VertionConfig {
     /// An entry naming a directory gates everything beneath it.
     #[serde(default, rename = "files")]
     pub files: Vec<FileVersion>,
+    /// JSON output files whose version keys are rewritten to the build's version.
+    #[serde(default, rename = "stamp", skip_serializing_if = "Vec::is_empty")]
+    pub stamps: Vec<StampEntry>,
     /// Named conditions referenced by `{name}` on marker tags.
     #[serde(default)]
     pub conditions: BTreeMap<String, ConditionDef>,
@@ -127,6 +131,16 @@ pub struct FileVersion {
     /// Prefix a name with `!` to negate it. Ignored for `version = "EXC"`.
     #[serde(default)]
     pub conditions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StampEntry {
+    /// The output file, relative to the input directory — as the build emits
+    /// it, so a variant directory is named by its target.
+    pub path: String,
+    /// Dot-separated key paths to the version values; `*` matches every
+    /// member of an object or element of an array.
+    pub keys: Vec<String>,
 }
 
 /// Normalize a path for matching: forward slashes, no leading `./`, no trailing
@@ -246,6 +260,22 @@ pub struct ProfileSection {
     pub wrap: Option<String>,
     /// Wrap folder name. Defaults to `.vertion_wrap`.
     pub wrap_name: Option<String>,
+    // The switches below are on when either the profile or the matching CLI
+    // flag says so. A bare flag can only turn something on, so the CLI can add
+    // to a profile's switches but not clear them.
+    /// Build to a timestamped folder, as `--dev` does.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub dev: bool,
+    /// Treat warnings as errors, as `--strict` does.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strict: bool,
+    /// Strip whole-line comments from the output, as `--no-comments` does.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub no_comments: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn default_input() -> PathBuf {
@@ -276,6 +306,7 @@ impl VertionConfig {
             profiles: BTreeMap::new(),
             include: Vec::new(),
             files: Vec::new(),
+            stamps: Vec::new(),
             conditions: BTreeMap::new(),
         }
     }
@@ -298,6 +329,7 @@ impl VertionConfig {
         let mut tags: Vec<String> = self.project.default_tags.clone();
         let mut wrap: Option<String> = None;
         let mut wrap_name: Option<String> = None;
+        let (mut dev, mut strict, mut no_comments) = (false, false, false);
 
         if let Some(n) = name {
             let prof = self.profiles.get(n).ok_or_else(|| {
@@ -326,6 +358,7 @@ impl VertionConfig {
             tags = prof.tags.clone();
             wrap = prof.wrap.clone();
             wrap_name = prof.wrap_name.clone();
+            (dev, strict, no_comments) = (prof.dev, prof.strict, prof.no_comments);
         }
 
         if IncrementLevel::parse(&increment).is_none() {
@@ -346,6 +379,9 @@ impl VertionConfig {
             tag_priority: self.project.tag_priority.clone(),
             wrap,
             wrap_name,
+            dev,
+            strict,
+            no_comments,
         })
     }
 
@@ -388,6 +424,38 @@ impl VertionConfig {
             })
             .collect()
     }
+
+    /// Parse `[[stamp]]` entries.
+    pub fn stamps(&self) -> Result<Vec<Stamp>, SettingsError> {
+        self.stamps
+            .iter()
+            .map(|s| {
+                let path = normalize_path_key(&s.path);
+                if path.is_empty() || path == "." {
+                    return Err(SettingsError(format!(
+                        "[[stamp]] path `{}` must name a file",
+                        s.path
+                    )));
+                }
+                if s.keys.is_empty() {
+                    return Err(SettingsError(format!(
+                        "[[stamp]] `{}` lists no keys to stamp",
+                        s.path
+                    )));
+                }
+                let patterns = s
+                    .keys
+                    .iter()
+                    .map(|k| crate::stamp::parse_key(k).map_err(SettingsError))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Stamp {
+                    path,
+                    keys: s.keys.clone(),
+                    patterns,
+                })
+            })
+            .collect()
+    }
 }
 
 pub struct ResolvedSettings {
@@ -402,6 +470,10 @@ pub struct ResolvedSettings {
     pub tag_priority: Vec<String>,
     pub wrap: Option<String>,
     pub wrap_name: Option<String>,
+    /// The profile's own switches; callers OR in the matching CLI flag.
+    pub dev: bool,
+    pub strict: bool,
+    pub no_comments: bool,
 }
 
 #[derive(Debug)]
@@ -1003,6 +1075,9 @@ mod tests {
                 tags: Vec::new(),
                 wrap: None,
                 wrap_name: None,
+                dev: false,
+                strict: true,
+                no_comments: false,
             },
         );
         fs::write(config_path(&dir), toml::to_string_pretty(&cfg).unwrap()).unwrap();
@@ -1010,7 +1085,25 @@ mod tests {
         assert_eq!(loaded.project.version, "2.5.0");
         let resolved = loaded.resolve_profile(Some("prod")).unwrap();
         assert_eq!(resolved.output, PathBuf::from("./build/prod"));
+        assert!(resolved.strict && !resolved.dev && !resolved.no_comments);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_switches_parse_and_default_off() {
+        let cfg: VertionConfig = toml::from_str(
+            "[project]\nversion = \"1.0\"\n\n\
+             [profiles.prod]\nstrict = true\nno_comments = true\n\n\
+             [profiles.plain]\n",
+        )
+        .unwrap();
+        let prod = cfg.resolve_profile(Some("prod")).unwrap();
+        assert!(prod.strict && prod.no_comments && !prod.dev);
+        let plain = cfg.resolve_profile(Some("plain")).unwrap();
+        assert!(!plain.strict && !plain.no_comments && !plain.dev);
+        // No profile at all: nothing switched on.
+        let none = cfg.resolve_profile(None).unwrap();
+        assert!(!none.strict && !none.no_comments && !none.dev);
     }
 
     #[test]

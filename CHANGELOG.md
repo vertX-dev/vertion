@@ -10,6 +10,10 @@ The VSCode extension has its own changelog:
 
 ## [Unreleased]
 
+Nothing yet.
+
+## [1.1.0] — 2026-09-28
+
 ### Added
 
 - `[[files]]` entries can name a directory, gating every file beneath it.
@@ -20,6 +24,16 @@ The VSCode extension has its own changelog:
   about `[[files]]` entries that match no file. Such an entry gates nothing, so
   after a rename the file or directory shipped ungated with no sign anything
   was wrong. Entries the build would reject are reported as errors.
+- `[[stamp]]` writes the build's version into JSON output files, at the keys
+  you list (`header.version`, `modules.*.version`). Strings get `"1.2.0"`;
+  `[major, minor, patch]` arrays, as in a Minecraft `manifest.json`, get
+  `[1, 2, 0]`. Only the listed values change, so formatting and comments
+  survive, and source files are never touched. Mistyped keys and values that
+  aren't versions are build warnings, and `vertion validate` reports them
+  before a build.
+- Profiles accept `strict`, `no_comments`, and `dev`, so
+  `[profiles.prod] strict = true` does what `-p prod --strict` did. Each is on
+  when either the profile or its CLI flag turns it on.
 
 ### Changed
 
@@ -119,5 +133,6 @@ for the first time.
 - `cargo binstall vertion` fetches a prebuilt release archive instead of
   compiling. Homebrew and Scoop manifests are templated in `dist/`.
 
-[Unreleased]: https://github.com/vertX-dev/vertion/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/vertX-dev/vertion/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/vertX-dev/vertion/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/vertX-dev/vertion/releases/tag/v1.0.0

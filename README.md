@@ -235,6 +235,8 @@ ignore    = ["tests", "debug"]
 increment = "minor"
 run       = ["npm install", "npm run build"]   # post-build cmds, run in the OUTPUT folder
 run_here  = ["git add build"]                  # post-build cmds, run in the INVOCATION dir
+strict      = true   # same as passing --strict
+no_comments = true   # same as passing --no-comments
 
 # Non-contiguous version set (used with `vertion build --include`).
 # Manage with `vertion include` / `vertion include --remove`.
@@ -269,6 +271,11 @@ conditions = ["!legacy"] # gated like a marker's {cond}; "!" negates
 path = "assets/v2"       # a directory: gates everything beneath it
 version = "2.0"
 
+# Write the build's version into JSON output files (sources are untouched).
+[[stamp]]
+path = "BP/manifest.json"
+keys = ["header.version", "modules.*.version"]   # "1.2.0" strings or [1, 2, 0] arrays
+
 # Named conditions for `[tag{name}]` markers. Precedence: cmd > global > bool.
 [conditions.imagesInStable]
 bool = false             # manual project switch
@@ -284,6 +291,8 @@ cmd = "test -d assets/img"   # exit 0 = true, re-evaluated each build
 Use a profile with `--profile prod`. `--auto` increments `[project].version` after a successful build (illegal with `ONLY`, `--include`, or `--last ONLY`).
 
 `[[files]]` assigns a version to a whole file. The file is excluded from the build when its version fails the active filter (e.g. `logo.png` above is dropped from any build below `2.0`); otherwise it copies as-is. Use `version = "EXC"` to exclude a file from every build. A `path` naming a directory gates everything beneath it; when a file is covered by several entries (its own and its directories'), all must pass. Applies to `build`, `extract`, and `watch`.
+
+`[[stamp]]` writes the build's version into the listed keys of a JSON output file: a string gets `"1.2.0"`, a `[major, minor, patch]` array gets `[1, 2, 0]`. Only those values change — formatting and comments are kept, and the source file is never touched. See [DOCS.md §5.9c](DOCS.md#59c-version-stamping-stamp).
 
 > The config file is `vertion.cfg` (TOML syntax). A legacy `vertion.toml` is still read and written back to if present, so existing projects keep working — rename it to `vertion.cfg` when convenient.
 

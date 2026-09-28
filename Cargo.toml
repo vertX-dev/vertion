@@ -1,6 +1,6 @@
 [package]
 name = "vertion"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 authors = ["vertX"]
 description = "Filter source files by version markers and emit a per-version build tree."

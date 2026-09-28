@@ -13,6 +13,7 @@ use crate::config::detect_comment_style;
 use crate::filter::{tag_passes, FilterMode};
 use crate::parser::{conditions_pass, process_file, ProcessOptions};
 use crate::settings::{normalize_path_key, path_covers, FileVersionSpec};
+use crate::stamp::Stamp;
 use crate::variants::{DEFAULT_STEM, VARIANT_PREFIX};
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -21,6 +22,9 @@ pub struct BuildResult {
     pub files_modified: usize,
     pub files_copied: usize,
     pub lines_stripped: usize,
+    /// Output files `[[stamp]]` rewrote to carry the build's version.
+    #[serde(default)]
+    pub files_stamped: usize,
     pub time_ms: u128,
     pub output: PathBuf,
     pub version: String,
@@ -81,6 +85,9 @@ pub struct BuildOptions<'a> {
     /// Whole-file version assignments (normalized rel path → spec) from config.
     /// A file is excluded when its version fails the filter, or its spec is `EXC`.
     pub file_versions: &'a [(String, FileVersionSpec)],
+    /// JSON output files whose version keys are rewritten to the build's
+    /// version once everything is written (`[[stamp]]`).
+    pub stamps: &'a [Stamp],
     /// Resolved `(name, value)` condition pairs for `{cond}` marker tags.
     pub conditions: &'a [(String, bool)],
     /// Tag preference order (`[project].tag_priority`), most important first.
@@ -240,6 +247,31 @@ pub fn build_project(opts: BuildOptions<'_>) -> Result<BuildResult, io::Error> {
         }
         result.lines_stripped += outcome.lines_stripped;
         result.warnings.append(&mut warnings);
+    }
+
+    // Stamp versions into the finished output. A file the build didn't emit
+    // (gated out, or no longer in the tree) is skipped here; `validate` is
+    // what reports an entry that matches nothing.
+    let version = opts.filter.upper();
+    for stamp in opts.stamps {
+        let dest = output_abs.join(&stamp.path);
+        let Ok(text) = fs::read_to_string(&dest) else {
+            continue;
+        };
+        match crate::stamp::stamp_text(&text, stamp, version) {
+            Ok(report) => {
+                for p in report.problems {
+                    result.warnings.push(format!("{}: {}", stamp.path, p));
+                }
+                if report.text != text {
+                    fs::write(&dest, report.text)?;
+                    result.files_stamped += 1;
+                }
+            }
+            Err(e) => result
+                .warnings
+                .push(format!("{}: {}; not stamped", stamp.path, e)),
+        }
     }
 
     result.time_ms = start.elapsed().as_millis();
@@ -626,6 +658,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         };
@@ -661,6 +694,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         };
@@ -708,6 +742,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &file_versions,
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         };
@@ -757,6 +792,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &file_versions,
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         };
@@ -784,6 +820,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         }
@@ -965,6 +1002,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &file_versions,
+            stamps: &[],
             conditions: &conditions,
             tag_priority: &[],
         };
@@ -994,6 +1032,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &file_versions,
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         };
@@ -1111,6 +1150,7 @@ mod tests {
             show_progress: false,
             no_comments: true,
             file_versions: &[],
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         };
@@ -1141,6 +1181,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         };
@@ -1169,6 +1210,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         };
@@ -1203,6 +1245,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         };

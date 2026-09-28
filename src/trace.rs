@@ -15,7 +15,7 @@ use crate::config::detect_comment_style;
 use crate::linemap::{self, Run};
 use crate::parser::{process_file, ProcessOptions};
 use crate::settings::{load_or_default, DEFAULT_CONFIG_NAME};
-use crate::variants::VARIANT_PREFIX;
+use crate::variants::{output_path, VARIANT_PREFIX};
 
 pub const MANIFEST_NAME: &str = "vertion.manifest.json";
 
@@ -199,6 +199,7 @@ impl Trace {
             // Whole-file gates only decide *whether* a file is emitted, never
             // where its lines land, so they don't affect the mapping.
             file_versions: &[],
+            stamps: &[],
             conditions: &self.spec.conditions,
             tag_priority: &self.spec.tag_priority,
         }
@@ -277,28 +278,9 @@ impl Trace {
         Ok(runs)
     }
 
-    /// Where an input path lands in the output. The identity, except inside a
-    /// `.vertion.<target>/` directory: that is emitted as `<target>`, and the
-    /// variant's own name (`2.0.0.png`, or a folder variant's `2.0.0/`) is not
-    /// part of the result.
+    /// Where an input path lands in the output; see [`output_path`].
     pub fn output_for(&self, rel: &Path) -> PathBuf {
-        let mut out = PathBuf::new();
-        let mut comps = rel.components();
-        while let Some(c) = comps.next() {
-            match c
-                .as_os_str()
-                .to_string_lossy()
-                .strip_prefix(VARIANT_PREFIX)
-                .filter(|t| !t.is_empty())
-            {
-                Some(target) => {
-                    out.push(target);
-                    comps.next();
-                }
-                None => out.push(c.as_os_str()),
-            }
-        }
-        out
+        output_path(rel)
     }
 
     /// Whether the built file still has as many lines as the recomputed map
@@ -441,6 +423,7 @@ mod tests {
             show_progress: false,
             no_comments: false,
             file_versions: &[],
+            stamps: &[],
             conditions: &[],
             tag_priority: &[],
         })

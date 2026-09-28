@@ -7,7 +7,8 @@ use walkdir::WalkDir;
 use crate::config::detect_comment_style;
 use crate::parser::{detect_marker, Marker, MarkerKind};
 use crate::settings::{normalize_path_key, path_covers};
-use crate::variants::VARIANT_PREFIX;
+use crate::stamp::Stamp;
+use crate::variants::output_path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -193,21 +194,71 @@ pub fn validate_project(root: &Path, ignore: &[PathBuf]) -> io::Result<Validatio
     Ok(summary)
 }
 
-/// Flag `[[files]]` entries that cover no file.
+/// A config table whose entries name paths in the build output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Table {
+    /// `[[files]]`: a path may name a directory, covering everything beneath.
+    Files,
+    /// `[[stamp]]`: a path names exactly one file.
+    Stamp,
+}
+
+impl Table {
+    fn header(self) -> &'static str {
+        match self {
+            Table::Files => "[[files]]",
+            Table::Stamp => "[[stamp]]",
+        }
+    }
+
+    fn covers(self, entry: &str, key: &str) -> bool {
+        match self {
+            Table::Files => path_covers(entry, key),
+            Table::Stamp => entry == key,
+        }
+    }
+
+    fn consequence(self) -> &'static str {
+        match self {
+            Table::Files => "gates nothing",
+            Table::Stamp => "stamps nothing",
+        }
+    }
+
+    /// 1-based line of each of this table's headers in `text`.
+    fn header_lines(self, text: &str) -> Vec<usize> {
+        text.lines()
+            .enumerate()
+            .filter(|(_, l)| l.trim_start().starts_with(self.header()))
+            .map(|(i, _)| i + 1)
+            .collect()
+    }
+}
+
+/// The line to report entry `i` at: its header when the headers line up with
+/// the entries, else line 1 (e.g. for an inline `files = [...]` array).
+fn entry_line(headers: &[usize], entries: usize, i: usize) -> usize {
+    if headers.len() == entries {
+        headers[i]
+    } else {
+        1
+    }
+}
+
+/// Flag `[[files]]` or `[[stamp]]` entries whose path matches no file.
 ///
-/// An entry whose path matches nothing does nothing, silently — so after a
-/// rename, the file (or a whole directory) ships ungated. `paths` are the
+/// Such an entry does nothing, silently — so after a rename, a file (or, for
+/// `[[files]]`, a whole directory) ships ungated or unstamped. `paths` are the
 /// normalized entry paths in config order; `inputs` are every input directory
 /// the config can build from (`[project]` and each profile), and an entry is
-/// live if it covers a file in any of them. Paths are compared as the build
+/// live if it matches a file in any of them. Paths are compared as the build
 /// sees them: a file inside `.vertion.<target>/` counts as `<target>`.
 ///
-/// Issues point at the entry's `[[files]]` header in `config_text`, falling
-/// back to line 1 when the headers can't be lined up with the entries (e.g. an
-/// inline `files = [...]` array).
-pub fn check_file_entries(
+/// Issues point at the entry's header in `config_text`.
+pub fn check_entry_paths(
     config: &Path,
     config_text: &str,
+    table: Table,
     paths: &[String],
     inputs: &[PathBuf],
 ) -> Vec<ValidationIssue> {
@@ -218,7 +269,7 @@ pub fn check_file_entries(
         return Vec::new();
     }
 
-    // (path the build gates on, path as it sits in the source tree)
+    // (path the build emits, path as it sits in the source tree)
     let mut files: Vec<(String, String)> = Vec::new();
     for input in &inputs {
         for entry in WalkDir::new(input).into_iter().filter_map(|e| e.ok()) {
@@ -230,23 +281,10 @@ pub fn check_file_entries(
         }
     }
 
-    let headers: Vec<usize> = config_text
-        .lines()
-        .enumerate()
-        .filter(|(_, l)| l.trim_start().starts_with("[[files]]"))
-        .map(|(i, _)| i + 1)
-        .collect();
-    let line_of = |i: usize| {
-        if headers.len() == paths.len() {
-            headers[i]
-        } else {
-            1
-        }
-    };
-
+    let headers = table.header_lines(config_text);
     let mut issues = Vec::new();
     for (i, path) in paths.iter().enumerate() {
-        if files.iter().any(|(out, _)| path_covers(path, out)) {
+        if files.iter().any(|(out, _)| table.covers(path, out)) {
             continue;
         }
         // Naming a variant directory by its source path is the likeliest
@@ -261,35 +299,61 @@ pub fn check_file_entries(
         };
         issues.push(ValidationIssue {
             file: config.to_path_buf(),
-            line: line_of(i),
+            line: entry_line(&headers, paths.len(), i),
             severity: Severity::Warning,
             message: format!(
-                "[[files]] path `{}` matches no file, so it gates nothing{}",
-                path, hint
+                "{} path `{}` matches no file, so it {}{}",
+                table.header(),
+                path,
+                table.consequence(),
+                hint
             ),
         });
     }
     issues
 }
 
-/// The path a source file is built to, as `[[files]]` sees it: each
-/// `.vertion.<target>` component becomes `<target>`, and the variant name that
-/// follows it is dropped.
-fn output_key(rel: &Path) -> String {
-    let mut out: Vec<String> = Vec::new();
-    let mut comps = rel
-        .components()
-        .map(|c| c.as_os_str().to_string_lossy().into_owned());
-    while let Some(c) = comps.next() {
-        match c.strip_prefix(VARIANT_PREFIX) {
-            Some(target) if !target.is_empty() => {
-                out.push(target.to_string());
-                comps.next();
-            }
-            _ => out.push(c),
+/// Dry-run each `[[stamp]]` entry against its source file, to catch a key
+/// that matches nothing or a value that isn't a version before a build does.
+///
+/// Only files that sit in an input directory under their own name are checked:
+/// a variant target has several candidate sources and no single one to test.
+/// Missing files are [`check_entry_paths`]'s business, so they're skipped here.
+pub fn check_stamp_keys(
+    config: &Path,
+    config_text: &str,
+    stamps: &[Stamp],
+    inputs: &[PathBuf],
+) -> Vec<ValidationIssue> {
+    let headers = Table::Stamp.header_lines(config_text);
+    let any = semver::Version::new(0, 0, 0);
+    let mut issues = Vec::new();
+    for (i, stamp) in stamps.iter().enumerate() {
+        let Some(text) = inputs
+            .iter()
+            .find_map(|input| fs::read_to_string(input.join(&stamp.path)).ok())
+        else {
+            continue;
+        };
+        let problems = match crate::stamp::stamp_text(&text, stamp, &any) {
+            Ok(report) => report.problems,
+            Err(e) => vec![format!("{}; it can't be stamped", e)],
+        };
+        for p in problems {
+            issues.push(ValidationIssue {
+                file: config.to_path_buf(),
+                line: entry_line(&headers, stamps.len(), i),
+                severity: Severity::Warning,
+                message: format!("[[stamp]] `{}`: {}", stamp.path, p),
+            });
         }
     }
-    out.join("/")
+    issues
+}
+
+/// The path a source file is built to, normalized the way config paths are.
+fn output_key(rel: &Path) -> String {
+    normalize_path_key(&output_path(rel).to_string_lossy())
 }
 
 fn absolute(p: &Path) -> PathBuf {
@@ -391,7 +455,58 @@ mod tests {
 
     fn check(paths: &[&str], inputs: &[PathBuf], text: &str) -> Vec<ValidationIssue> {
         let paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
-        check_file_entries(Path::new("vertion.cfg"), text, &paths, inputs)
+        check_entry_paths(Path::new("vertion.cfg"), text, Table::Files, &paths, inputs)
+    }
+
+    #[test]
+    fn stamp_entries_must_name_a_file_exactly() {
+        let src = tree("stamp", &["BP/manifest.json", "RP/manifest.json"]);
+        let paths = ["BP/manifest.json".to_string(), "BP".to_string()];
+        let text = "[[stamp]]\npath = \"BP/manifest.json\"\n\n[[stamp]]\npath = \"BP\"\n";
+        let issues = check_entry_paths(
+            Path::new("vertion.cfg"),
+            text,
+            Table::Stamp,
+            &paths,
+            std::slice::from_ref(&src),
+        );
+        // A directory is fine for [[files]] but names no single file to stamp.
+        assert_eq!(issues.len(), 1, "{:?}", issues);
+        assert_eq!(issues[0].line, 4);
+        assert!(issues[0].message.contains("stamps nothing"));
+        let _ = fs::remove_dir_all(&src);
+    }
+
+    #[test]
+    fn stamp_keys_are_dry_run_against_the_source() {
+        let src = tree("stampkeys", &[]);
+        fs::create_dir_all(src.join("BP")).unwrap();
+        fs::write(
+            src.join("BP/manifest.json"),
+            r#"{"header": {"version": [1, 0, 0]}, "modules": [{"version": 1}]}"#,
+        )
+        .unwrap();
+        let keys = ["header.version", "modules.*.version", "header.verison"];
+        let stamp = Stamp {
+            path: "BP/manifest.json".into(),
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            patterns: keys
+                .iter()
+                .map(|k| crate::stamp::parse_key(k).unwrap())
+                .collect(),
+        };
+        let issues = check_stamp_keys(
+            Path::new("vertion.cfg"),
+            "",
+            std::slice::from_ref(&stamp),
+            std::slice::from_ref(&src),
+        );
+        assert_eq!(issues.len(), 2, "{:?}", issues);
+        assert!(issues[0].message.contains("`modules.0.version`"));
+        assert!(issues[1]
+            .message
+            .contains("`header.verison` matched nothing"));
+        let _ = fs::remove_dir_all(&src);
     }
 
     #[test]
